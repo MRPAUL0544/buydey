@@ -329,8 +329,8 @@ function App() {
               <div className="popular-searches"><span>Popular:</span><button onClick={() => setQuery('iPhone')}>iPhone 15</button><button onClick={() => setQuery('Toyota')}>Toyota Corolla</button><button onClick={() => setQuery('house')}>Houses for rent</button></div>
             </div>
             <div className="hero-stats">
-              <div><strong>12K+</strong><span>Fresh listings</span></div>
-              <div><strong>8K+</strong><span>Trusted sellers</span></div>
+              <div><strong>Private</strong><span>ID verification</span></div>
+              <div><strong>Free</strong><span>Standard listings</span></div>
               <div><strong>16</strong><span>Regions covered</span></div>
             </div>
           </div>
@@ -353,7 +353,7 @@ function App() {
         <section className="market-section" id="market">
           <div className="container">
             <div className="section-heading">
-              <div><span className="kicker">Fresh near you</span><h2>{category === 'All' ? 'Trending listings' : category}</h2><p>Hand-picked deals from sellers across Ghana.</p></div>
+              <div><span className="kicker">Fresh near you</span><h2>{category === 'All' ? 'Trending listings' : category}</h2><p>Browse listings from communities across Ghana and verify every item before payment.</p></div>
               <button className="text-link">See all listings <ArrowRight size={17} /></button>
             </div>
             {filtered.length ? (
@@ -515,7 +515,7 @@ function App() {
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowChat(false)}>
           <section className="modal-card chat-modal" role="dialog" aria-modal="true" aria-label="BuyDey messages" onMouseDown={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setShowChat(false)} aria-label="Close"><X /></button>
-            <div className="chat-header"><div className="seller-avatar">KA</div><div><b>Kofi’s Verified Store</b><span><i /> Online now</span></div></div>
+            <div className="chat-header"><div className="seller-avatar">{(selectedListing?.sellerName || 'BD').slice(0,2).toUpperCase()}</div><div><b>{selectedListing?.sellerName || 'BuyDey messages'}</b><span><i /> Keep payments and conversations safe</span></div></div>
             <div className="chat-context">{selectedListing && <><img src={selectedListing.image} alt="" /><span><b>{selectedListing.title}</b><small>{selectedListing.price}</small></span></>}</div>
             <div className="chat-messages"><div className="message incoming">Hello 👋 Is this item still available?</div>{messages.map((message, index) => <div className="message outgoing" key={`${message}-${index}`}>{message}<small>Delivered</small></div>)}</div>
             <form className="chat-form" onSubmit={sendMessage}><input value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="Type a message..." aria-label="Message" /><button type="submit" aria-label="Send message"><ArrowRight /></button></form>
