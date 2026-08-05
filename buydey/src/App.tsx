@@ -343,7 +343,7 @@ function App() {
               {categories.map(({ name, icon: Icon, tone }) => (
                 <button key={name} className={`category-card ${category === name ? 'selected' : ''}`} onClick={() => setCategory(category === name ? 'All' : name)}>
                   <span className={`category-icon ${tone}`}><Icon size={25} /></span>
-                  <span>{name}</span><small>{name === 'More' ? 'All categories' : `${Math.floor(320 + name.length * 113)} ads`}</small>
+                  <span>{name}</span><small>Browse category</small>
                 </button>
               ))}
             </div>
@@ -362,7 +362,7 @@ function App() {
                   <article className="listing-card" key={item.id} onClick={() => { setGalleryImage(item.image); setSelectedListing(item) }} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') { setGalleryImage(item.image); setSelectedListing(item) } }}>
                     <div className="listing-image">
                       <img src={item.image} alt={item.title} />
-                      <div className="card-badges">{item.promoted && <span>Featured</span>}</div>
+                      <div className="card-badges">{typeof item.id === 'number' && <span>Sample listing</span>}{item.promoted && <span>Featured</span>}</div>
                       <button className={`save-button ${saved.includes(item.id) ? 'saved' : ''}`} onClick={(event) => { event.stopPropagation(); toggleSaved(item.id) }} aria-label="Save listing"><Heart size={20} fill={saved.includes(item.id) ? 'currentColor' : 'none'} /></button>
                     </div>
                     <div className="listing-body">
