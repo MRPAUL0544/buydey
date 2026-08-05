@@ -4,7 +4,7 @@ import {
   Baby, BriefcaseBusiness, CheckCircle2, Dumbbell, Hammer, Heart, Home, Laptop,
   LockKeyhole, MapPin, Menu, MessageCircle, PawPrint, Phone, Plus, Search,
   ShieldCheck, Shirt, ShoppingBag, Smartphone, Sparkles, SprayCan, Star, Store,
-  Tractor, Upload, UserRound, Wrench, X,
+  Tractor, Upload, UserRound, Wrench, X, IdCard,
 } from 'lucide-react'
 import { supabase } from './supabase'
 
@@ -18,7 +18,17 @@ type Listing = {
   image: string
   verified?: boolean
   promoted?: boolean
+  description?: string
+  condition?: string
+  sellerName?: string
+  sellerId?: string
 }
+
+const ghanaRegions = [
+  'Ahafo', 'Ashanti', 'Bono', 'Bono East', 'Central', 'Eastern', 'Greater Accra',
+  'North East', 'Northern', 'Oti', 'Savannah', 'Upper East', 'Upper West',
+  'Volta', 'Western', 'Western North',
+]
 
 const categories = [
   { name: 'Vehicles', icon: Car, tone: 'amber' },
@@ -66,6 +76,9 @@ function App() {
   const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('buydey-user'))
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
   const [authMessage, setAuthMessage] = useState('')
+  const [showVerification, setShowVerification] = useState(false)
+  const [verificationStatus, setVerificationStatus] = useState<'unverified' | 'pending' | 'verified' | 'rejected'>('unverified')
+  const [verificationMessage, setVerificationMessage] = useState('')
   const [showDashboard, setShowDashboard] = useState(false)
   const [showChat, setShowChat] = useState(false)
   const [galleryImage, setGalleryImage] = useState<string | null>(null)
@@ -87,8 +100,16 @@ function App() {
     return () => data.subscription.unsubscribe()
   }, [])
   useEffect(() => {
+    if (!currentUser) return setVerificationStatus('unverified')
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data.user) return
+      const profile = await supabase.from('profiles').select('verification_status').eq('id', data.user.id).single()
+      if (profile.data?.verification_status) setVerificationStatus(profile.data.verification_status)
+    })
+  }, [currentUser])
+  useEffect(() => {
     supabase.from('listings')
-      .select('id,title,price,location,created_at,promoted,categories(name),listing_images(storage_path,position)')
+      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,categories(name),profiles(full_name,verified),listing_images(storage_path,position)')
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .then(({ data }) => {
@@ -104,6 +125,11 @@ function App() {
             category: row.categories?.name || 'Other',
             image: firstPhoto ? supabase.storage.from('listing-images').getPublicUrl(firstPhoto.storage_path).data.publicUrl : listings[0].image,
             promoted: row.promoted,
+            description: row.description,
+            condition: row.condition,
+            sellerId: row.seller_id,
+            sellerName: row.profiles?.full_name || 'BuyDey seller',
+            verified: Boolean(row.profiles?.verified),
           }
         })
         setMarketListings((current) => [...online, ...current.filter((item) => !online.some((live) => live.id === item.id))])
@@ -133,8 +159,9 @@ function App() {
     const email = String(form.get('email') || '').trim()
     const password = String(form.get('password') || '')
     const fullName = String(form.get('fullName') || '').trim()
+    const phone = String(form.get('phone') || '').trim()
     const result = authMode === 'signup'
-      ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName } } })
+      ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName, phone } } })
       : await supabase.auth.signInWithPassword({ email, password })
     if (result.error) return setAuthMessage(result.error.message)
     if (authMode === 'signup' && !result.data.session) {
@@ -158,6 +185,9 @@ function App() {
     }
     const form = new FormData(event.currentTarget)
     const categoryName = String(form.get('category'))
+    const region = String(form.get('region'))
+    const town = String(form.get('town')).trim()
+    const fullLocation = `${town}, ${region}`
     const imageByCategory: Record<string, string> = {
       'Phones & Tablets': listings[0].image, Vehicles: listings[1].image, Property: listings[2].image,
       Electronics: listings[3].image, Fashion: listings[5].image,
@@ -165,8 +195,9 @@ function App() {
     }
     const newListing: Listing = {
       id: Date.now(), title: String(form.get('title')), price: `GH₵ ${Number(form.get('price')).toLocaleString()}`,
-      location: String(form.get('location')), time: 'Just now', category: categoryName,
+      location: fullLocation, time: 'Just now', category: categoryName,
       image: imageByCategory[categoryName] || listings[0].image, verified: Boolean(currentUser),
+      description: String(form.get('description')), condition: String(form.get('condition')),
     }
     const { data: categoryRow, error: categoryError } = await supabase.from('categories').select('id').eq('name', categoryName).single()
     if (categoryError) return window.alert(categoryError.message)
@@ -176,8 +207,10 @@ function App() {
       title: String(form.get('title')),
       description: String(form.get('description')),
       price: Number(form.get('price')),
-      location: String(form.get('location')),
-      condition: 'Used',
+      location: fullLocation,
+      region,
+      town,
+      condition: String(form.get('condition')),
       status: 'active',
     }).select('id').single()
     if (listingError) return window.alert(listingError.message)
@@ -194,6 +227,43 @@ function App() {
     }
     setMarketListings((current) => [newListing, ...current])
     setAdSubmitted(true)
+  }
+
+  const handleVerification = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setVerificationMessage('Uploading your documents securely...')
+    const { data } = await supabase.auth.getUser()
+    if (!data.user) return setVerificationMessage('Please sign in before starting verification.')
+    const form = new FormData(event.currentTarget)
+    const files = {
+      front: form.get('documentFront') as File,
+      back: form.get('documentBack') as File,
+      selfie: form.get('selfie') as File,
+    }
+    const paths: Record<string, string> = {}
+    for (const [label, file] of Object.entries(files)) {
+      if (!(file instanceof File) || !file.size) {
+        if (label === 'back' && form.get('documentType') === 'passport') continue
+        return setVerificationMessage('Please add every required document image.')
+      }
+      const path = `${data.user.id}/${crypto.randomUUID()}-${label}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '-')}`
+      const upload = await supabase.storage.from('verification-documents').upload(path, file)
+      if (upload.error) return setVerificationMessage(upload.error.message)
+      paths[label] = path
+    }
+    const last4 = String(form.get('documentLast4') || '').replace(/\s/g, '').slice(-4).toUpperCase()
+    if (last4.length !== 4) return setVerificationMessage('Enter the last 4 characters of your ID number.')
+    const submission = await supabase.from('verification_requests').insert({
+      user_id: data.user.id,
+      document_type: String(form.get('documentType')),
+      document_number_last4: last4,
+      front_path: paths.front,
+      back_path: paths.back || null,
+      selfie_path: paths.selfie,
+    })
+    if (submission.error) return setVerificationMessage(submission.error.message)
+    setVerificationStatus('pending')
+    setVerificationMessage('Submitted successfully. BuyDey will review your identity before awarding the trusted badge.')
   }
 
   const sendMessage = (event: FormEvent<HTMLFormElement>) => {
@@ -354,9 +424,10 @@ function App() {
               <p className="detail-location"><MapPin /> {selectedListing.location}</p>
               <div className="detail-divider" />
               <h3>Description</h3>
-              <p className="detail-description">Clean, carefully used and in excellent condition. What you see is exactly what you get. Inspection is welcome before payment.</p>
+              <p className="detail-description">{selectedListing.description || 'Ask the seller for full details and inspect the item carefully before paying.'}</p>
+              {selectedListing.condition && <p className="listing-condition"><b>Condition:</b> {selectedListing.condition}</p>}
               <div className="seller-box">
-                <div className="seller-avatar">KA</div><div><b>Kofi’s Verified Store <BadgeCheck size={16} /></b><span>Member since 2024 · Usually replies in minutes</span></div><Star size={17} fill="currentColor" /><b>4.9</b>
+                <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.verified ? 'Trusted' : 'New'}</b>
               </div>
               <div className="detail-actions"><button onClick={() => setShowChat(true)}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
               <p className="safety-note"><ShieldCheck /> Never pay before inspecting an item in person.</p>
@@ -372,6 +443,7 @@ function App() {
             <span className="auth-icon"><LockKeyhole /></span><span className="kicker">Welcome back</span><h2>Sign in to BuyDey</h2><p>Save listings, chat with sellers, and manage your ads.</p>
             <form onSubmit={handleLogin}>
               {authMode === 'signup' && <label>Full name<input name="fullName" placeholder="Your full name" required /></label>}
+              {authMode === 'signup' && <label>Ghana phone number<input name="phone" type="tel" placeholder="e.g. 024 123 4567" required /></label>}
               <label>Email address<input name="email" type="email" placeholder="you@example.com" required /></label>
               <label>Password<input name="password" type="password" placeholder="Enter your password" required /></label>
               <div className="form-helper"><label><input type="checkbox" /> Remember me</label><button type="button">Forgot password?</button></div>
@@ -393,7 +465,8 @@ function App() {
                 <label className="upload-box"><Upload /><b>Add product photos</b><span>Up to 10 clear images · JPG, PNG or WebP</span><input name="photos" type="file" accept="image/jpeg,image/png,image/webp" multiple /></label>
                 <div className="free-listing-note"><CheckCircle2 /> Standard listings are completely free. No card or mobile-money payment required.</div>
                 <div className="form-grid"><label>Ad title<input name="title" placeholder="e.g. iPhone 15 Pro Max 256GB" required /></label><label>Category<select name="category" required defaultValue=""><option value="" disabled>Select a category</option>{categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>
-                <div className="form-grid"><label>Price (GH₵)<input name="price" type="number" min="1" placeholder="0.00" required /></label><label>Location<select name="location" required defaultValue=""><option value="" disabled>Select your region</option><option>Greater Accra</option><option>Ashanti</option><option>Central</option><option>Eastern</option><option>Western</option><option>Northern</option></select></label></div>
+                <div className="form-grid"><label>Price (GH₵)<input name="price" type="number" min="1" placeholder="0.00" required /></label><label>Condition<select name="condition" required defaultValue=""><option value="" disabled>Select condition</option><option>Brand New</option><option>Used</option><option>Refurbished</option><option>For Parts</option></select></label></div>
+                <div className="form-grid"><label>Region<select name="region" required defaultValue=""><option value="" disabled>Select one of Ghana's 16 regions</option>{ghanaRegions.map((region) => <option key={region}>{region}</option>)}</select></label><label>Town / area<input name="town" placeholder="e.g. East Legon, Adum, Ho Central" required /></label></div>
                 <label>Description<textarea name="description" placeholder="Describe the condition, important features and what is included..." rows={4} required /></label>
                 <button className="primary-form-button" type="submit"><Plus /> Create listing draft</button>
               </form>
@@ -411,10 +484,29 @@ function App() {
           <section className="modal-card dashboard-modal" role="dialog" aria-modal="true" aria-label="My BuyDey account" onMouseDown={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setShowDashboard(false)} aria-label="Close"><X /></button>
             <div className="dashboard-header"><div className="seller-avatar">{currentUser?.slice(-2) || 'BD'}</div><div><span className="kicker">My BuyDey</span><h2>Welcome back</h2><p>{currentUser}</p></div></div>
+            <div className={`verification-card ${verificationStatus}`}><span><IdCard /></span><div><b>{verificationStatus === 'verified' ? 'Verified and trusted seller' : verificationStatus === 'pending' ? 'Identity review in progress' : verificationStatus === 'rejected' ? 'Verification needs attention' : 'Become a verified seller'}</b><p>{verificationStatus === 'verified' ? 'Your trusted badge appears on your listings.' : verificationStatus === 'pending' ? 'Your documents are private and awaiting manual review.' : 'Submit a Ghana Card, passport or driver’s licence and a clear selfie.'}</p></div>{verificationStatus !== 'verified' && verificationStatus !== 'pending' && <button onClick={() => { setShowDashboard(false); setVerificationMessage(''); setShowVerification(true) }}>Verify identity</button>}</div>
             <div className="dashboard-stats"><div><strong>{marketListings.length}</strong><span>Live listings</span></div><div><strong>{saved.length}</strong><span>Saved items</span></div><div><strong>{messages.length}</strong><span>Messages</span></div></div>
             <div className="dashboard-actions"><button onClick={() => { setShowDashboard(false); setAdSubmitted(false); setShowPostAd(true) }}><Plus /> Post a new ad</button><button onClick={() => { setShowDashboard(false); setShowChat(true) }}><MessageCircle /> Open messages</button></div>
             <h3>Recently listed</h3><div className="mini-listings">{marketListings.slice(0, 3).map((item) => <button key={item.id} onClick={() => { setShowDashboard(false); setSelectedListing(item) }}><img src={item.image} alt="" /><span><b>{item.title}</b><small>{item.price} · {item.location}</small></span><ArrowRight /></button>)}</div>
             <button className="signout-button" onClick={async () => { await supabase.auth.signOut(); localStorage.removeItem('buydey-user'); setCurrentUser(null); setShowDashboard(false) }}>Sign out</button>
+          </section>
+        </div>
+      )}
+
+      {showVerification && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowVerification(false)}>
+          <section className="modal-card verification-modal" role="dialog" aria-modal="true" aria-label="Verify your identity" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowVerification(false)} aria-label="Close"><X /></button>
+            <span className="auth-icon"><IdCard /></span><span className="kicker">BuyDey trust</span><h2>Verify your identity</h2>
+            <p>Your documents are stored privately and never shown to buyers. A trained reviewer must approve them before your trusted badge appears.</p>
+            <form onSubmit={handleVerification}>
+              <label>ID document type<select name="documentType" required defaultValue="ghana_card"><option value="ghana_card">Ghana Card</option><option value="passport">Passport</option><option value="drivers_license">Driver’s licence</option></select></label>
+              <label>Last 4 characters of ID number<input name="documentLast4" minLength={4} maxLength={4} placeholder="Last 4 only" required /></label>
+              <div className="verification-files"><label><Upload /><b>Front of ID</b><input name="documentFront" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" required /></label><label><Upload /><b>Back of ID</b><small>Optional for passport</small><input name="documentBack" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" /></label><label><Camera /><b>Clear selfie</b><input name="selfie" type="file" accept="image/jpeg,image/png,image/webp" capture="user" required /></label></div>
+              <div className="privacy-note"><ShieldCheck /> By submitting, you confirm the documents belong to you and consent to identity review for marketplace safety.</div>
+              {verificationMessage && <p className="auth-message">{verificationMessage}</p>}
+              <button className="primary-form-button" type="submit"><BadgeCheck /> Submit for review</button>
+            </form>
           </section>
         </div>
       )}
