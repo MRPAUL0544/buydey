@@ -29,6 +29,7 @@ type Listing = {
 
 type ChatMessage = { id: string; body: string; senderId?: string }
 type AppNotification = { id: string; type: string; title: string; body: string; listing_id?: string; read_at?: string; created_at: string }
+type ProductQuestion = { id: string; user_id: string; parent_id?: string; body: string; created_at: string; author?: { full_name?: string } }
 type VerificationReview = { id: string; user_id: string; document_type: string; document_number_last4: string; front_path: string; back_path?: string; selfie_path: string; status: string; submitted_at: string; user?: { full_name?: string; phone?: string } }
 type ListingReport = { id: string; listing_id: string; reason: string; details?: string; status: string; created_at: string; listing?: { title?: string; seller_id?: string; location?: string }; reporter?: { full_name?: string } }
 type AdminUser = { id: string; full_name?: string; phone?: string; verified: boolean; verification_status: string; account_status: 'active' | 'suspended'; created_at: string }
@@ -110,6 +111,8 @@ function App() {
   const [adminListings, setAdminListings] = useState<AdminListing[]>([])
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [showNotifications, setShowNotifications] = useState(false)
+  const [productQuestions, setProductQuestions] = useState<ProductQuestion[]>([])
+  const [questionText, setQuestionText] = useState('')
 
   const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset || showNotifications)
 
@@ -155,6 +158,10 @@ function App() {
     }, (payload) => setNotifications((current) => [payload.new as AppNotification, ...current])).subscribe()
     return () => { void supabase.removeChannel(channel) }
   }, [currentUserId])
+  useEffect(() => {
+    if (!selectedListing || typeof selectedListing.id === 'number') { setProductQuestions([]); return }
+    supabase.from('listing_questions').select('id,user_id,parent_id,body,created_at,author:profiles!listing_questions_user_id_fkey(full_name)').eq('listing_id', selectedListing.id).eq('status', 'published').order('created_at').then(({ data }) => setProductQuestions((data || []) as unknown as ProductQuestion[]))
+  }, [selectedListing?.id])
   useEffect(() => {
     const previous = document.body.style.overflow
     document.body.style.overflow = anyModalOpen ? 'hidden' : previous
@@ -538,6 +545,28 @@ function App() {
     }
   }
 
+  const askProductQuestion = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedListing || typeof selectedListing.id === 'number') return
+    if (!currentUserId) { setAuthMessage('Sign in to ask the seller a public question.'); setShowLogin(true); return }
+    if (currentUserId === selectedListing.sellerId) return window.alert('Sellers can reply to buyer questions, but cannot ask on their own listing.')
+    const body = questionText.trim()
+    if (body.length < 2) return
+    const result = await supabase.from('listing_questions').insert({ listing_id: selectedListing.id, user_id: currentUserId, body }).select('id,user_id,parent_id,body,created_at').single()
+    if (result.error) return window.alert(result.error.message)
+    setProductQuestions((current) => [...current, { ...result.data, author: { full_name: currentUser?.split('@')[0] || 'Buyer' } } as ProductQuestion])
+    setQuestionText('')
+  }
+
+  const replyToQuestion = async (question: ProductQuestion) => {
+    if (!selectedListing || typeof selectedListing.id === 'number' || currentUserId !== selectedListing.sellerId) return
+    const body = window.prompt('Write your public seller reply:')?.trim()
+    if (!body || body.length < 2) return
+    const result = await supabase.from('listing_questions').insert({ listing_id: selectedListing.id, user_id: currentUserId, parent_id: question.id, body }).select('id,user_id,parent_id,body,created_at').single()
+    if (result.error) return window.alert(result.error.message)
+    setProductQuestions((current) => [...current, { ...result.data, author: { full_name: selectedListing.sellerName || 'Seller' } } as ProductQuestion])
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -692,6 +721,7 @@ function App() {
               <h3>Description</h3>
               <p className="detail-description">{selectedListing.description || 'Ask the seller for full details and inspect the item carefully before paying.'}</p>
               {selectedListing.condition && <p className="listing-condition"><b>Condition:</b> {selectedListing.condition}</p>}
+              {typeof selectedListing.id !== 'number' && <section className="product-questions"><div className="questions-heading"><div><h3>Questions about this product</h3><small>{productQuestions.filter((item) => !item.parent_id).length} public question(s)</small></div><MessageCircle /></div>{productQuestions.filter((item) => !item.parent_id).length ? <div className="question-list">{productQuestions.filter((item) => !item.parent_id).map((question) => <article key={question.id}><div className="question-author"><span>{(question.author?.full_name || 'BD').slice(0,2).toUpperCase()}</span><div><b>{question.author?.full_name || 'BuyDey buyer'}</b><small>{new Date(question.created_at).toLocaleDateString()}</small></div></div><p>{question.body}</p>{productQuestions.filter((item) => item.parent_id === question.id).map((reply) => <div className="seller-reply" key={reply.id}><BadgeCheck /><div><b>{reply.author?.full_name || selectedListing.sellerName || 'Seller'} · Seller</b><p>{reply.body}</p></div></div>)}{currentUserId === selectedListing.sellerId && !productQuestions.some((item) => item.parent_id === question.id) && <button onClick={() => replyToQuestion(question)}>Reply as seller</button>}</article>)}</div> : <div className="questions-empty">No questions yet. Ask the seller something helpful about this product.</div>}{currentUserId !== selectedListing.sellerId && <form className="question-form" onSubmit={askProductQuestion}><input value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder="Ask about condition, availability or important details..." maxLength={1000} /><button type="submit">Ask seller</button></form>}</section>}
               <div className="seller-box">
                 <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.rating ? `${selectedListing.rating.toFixed(1)} (${selectedListing.reviewCount})` : selectedListing.verified ? 'Trusted' : 'New'}</b>
               </div>
