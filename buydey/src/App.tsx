@@ -99,19 +99,26 @@ function App() {
   const [verificationQueue, setVerificationQueue] = useState<VerificationReview[]>([])
   const [reportQueue, setReportQueue] = useState<ListingReport[]>([])
   const [adminMessage, setAdminMessage] = useState('')
+  const [showPasswordReset, setShowPasswordReset] = useState(false)
+  const [passwordResetMessage, setPasswordResetMessage] = useState('')
 
-  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin)
+  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset)
 
   useEffect(() => localStorage.setItem('buydey-listings-v2', JSON.stringify(marketListings)), [marketListings])
   useEffect(() => localStorage.setItem('buydey-saved', JSON.stringify(saved)), [saved])
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setCurrentUser(data.session?.user.email || null); setCurrentUserId(data.session?.user.id || null) })
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
       const email = session?.user.email || null
       setCurrentUser(email)
       setCurrentUserId(session?.user.id || null)
       if (email) localStorage.setItem('buydey-user', email)
       else localStorage.removeItem('buydey-user')
+      if (event === 'PASSWORD_RECOVERY') {
+        setShowLogin(false)
+        setPasswordResetMessage('')
+        setShowPasswordReset(true)
+      }
     })
     return () => data.subscription.unsubscribe()
   }, [])
@@ -371,7 +378,20 @@ function App() {
     const email = window.prompt('Enter your BuyDey email address')?.trim()
     if (!email) return
     const result = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/` })
-    setAuthMessage(result.error ? result.error.message : 'Password reset email sent. Check your inbox.')
+    setAuthMessage(result.error ? result.error.message : 'Password reset email sent. Open the BuyDey recovery link in your inbox.')
+  }
+
+  const saveNewPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const password = String(form.get('newPassword') || '')
+    const confirmation = String(form.get('confirmPassword') || '')
+    if (password.length < 8) return setPasswordResetMessage('Use at least 8 characters for your new password.')
+    if (password !== confirmation) return setPasswordResetMessage('The two passwords do not match.')
+    setPasswordResetMessage('Updating your password securely...')
+    const result = await supabase.auth.updateUser({ password })
+    if (result.error) return setPasswordResetMessage(result.error.message)
+    setPasswordResetMessage('Password changed successfully. You can now use your new password.')
   }
 
   const reportListing = async () => {
@@ -622,6 +642,21 @@ function App() {
               <button className="primary-form-button" type="submit">{authMode === 'signup' ? 'Create free account' : 'Sign in'} <ArrowRight /></button>
             </form>
             <div className="auth-footer">{authMode === 'signin' ? 'New to BuyDey?' : 'Already registered?'} <button onClick={() => { setAuthMessage(''); setAuthMode(authMode === 'signin' ? 'signup' : 'signin') }}>{authMode === 'signin' ? 'Create a free account' : 'Sign in'}</button></div>
+          </section>
+        </div>
+      )}
+
+      {showPasswordReset && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-card auth-modal" role="dialog" aria-modal="true" aria-label="Create a new BuyDey password" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowPasswordReset(false)} aria-label="Close"><X /></button>
+            <span className="auth-icon"><LockKeyhole /></span><span className="kicker">Secure account recovery</span><h2>Create a new password</h2><p>Choose a strong password that you have not used on another website.</p>
+            <form onSubmit={saveNewPassword}>
+              <label>New password<input name="newPassword" type="password" minLength={8} autoComplete="new-password" placeholder="At least 8 characters" required /></label>
+              <label>Confirm new password<input name="confirmPassword" type="password" minLength={8} autoComplete="new-password" placeholder="Enter it again" required /></label>
+              {passwordResetMessage && <p className={`auth-message ${passwordResetMessage.startsWith('Password changed') ? 'success' : ''}`}>{passwordResetMessage}</p>}
+              <button className="primary-form-button" type="submit">Save new password <ArrowRight /></button>
+            </form>
           </section>
         </div>
       )}

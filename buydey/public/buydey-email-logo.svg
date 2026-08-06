@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="88" viewBox="0 0 320 88" role="img" aria-label="BuyDey">
+  <rect width="320" height="88" rx="20" fill="#f3faf7"/>
+  <rect x="18" y="17" width="54" height="54" rx="15" fill="#167c68"/>
+  <path d="M34 35h22l-2 21H36l-2-21Zm5 0v-3a6 6 0 0 1 12 0v3" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="88" y="57" font-family="Arial,Helvetica,sans-serif" font-size="38" font-weight="800" fill="#142b27">Buy<tspan fill="#167c68">Dey</tspan></text>
+</svg>
