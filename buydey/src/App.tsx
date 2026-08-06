@@ -84,12 +84,15 @@ function App() {
   const [verificationStatus, setVerificationStatus] = useState<'unverified' | 'pending' | 'verified' | 'rejected'>('unverified')
   const [verificationMessage, setVerificationMessage] = useState('')
   const [showDashboard, setShowDashboard] = useState(false)
+  const [showSaved, setShowSaved] = useState(false)
   const [showChat, setShowChat] = useState(false)
   const [galleryImage, setGalleryImage] = useState<string | null>(null)
   const [showImageZoom, setShowImageZoom] = useState(false)
   const [chatText, setChatText] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
+
+  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom)
 
   useEffect(() => localStorage.setItem('buydey-listings-v2', JSON.stringify(marketListings)), [marketListings])
   useEffect(() => localStorage.setItem('buydey-saved', JSON.stringify(saved)), [saved])
@@ -120,6 +123,11 @@ function App() {
     }).subscribe()
     return () => { void supabase.removeChannel(channel) }
   }, [conversationId])
+  useEffect(() => {
+    const previous = document.body.style.overflow
+    document.body.style.overflow = anyModalOpen ? 'hidden' : previous
+    return () => { document.body.style.overflow = previous }
+  }, [anyModalOpen])
   useEffect(() => {
     if (!currentUser) return setVerificationStatus('unverified')
     supabase.auth.getUser().then(async ({ data }) => {
@@ -384,7 +392,7 @@ function App() {
             <a href="#trust">Trust & safety</a>
           </nav>
           <div className="nav-actions">
-            <button className="icon-button desktop-only" aria-label="Notifications"><Bell size={20} /></button>
+            <button className="icon-button saved-header-button" aria-label={`Saved items (${saved.length})`} onClick={() => setShowSaved(true)}><Heart size={20} fill={saved.length ? 'currentColor' : 'none'} /><span>{saved.length}</span></button>
             <button className="login-button desktop-only" onClick={() => currentUser ? setShowDashboard(true) : setShowLogin(true)}><UserRound size={19} /> {currentUser ? 'My account' : 'Sign in'}</button>
             <button className="sell-button" onClick={() => { setAdSubmitted(false); setShowPostAd(true) }}><Camera size={19} /> Post free ad</button>
             <button className="menu-button" onClick={() => setMobileOpen(!mobileOpen)} aria-label="Toggle navigation">
@@ -567,6 +575,16 @@ function App() {
         </div>
       )}
 
+      {showSaved && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowSaved(false)}>
+          <section className="modal-card saved-modal" role="dialog" aria-modal="true" aria-label="Saved listings" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowSaved(false)} aria-label="Close"><X /></button>
+            <span className="auth-icon"><Heart fill="currentColor" /></span><span className="kicker">Your favourites</span><h2>Saved listings</h2><p>Everything you liked is kept here so you can return to it quickly.</p>
+            {marketListings.filter((item) => saved.includes(item.id)).length ? <div className="saved-listings">{marketListings.filter((item) => saved.includes(item.id)).map((item) => <article key={item.id}><button className="saved-main" onClick={() => { setShowSaved(false); setGalleryImage(item.image); setSelectedListing(item) }}><img src={item.image} alt={item.title} /><span><b>{item.title}</b><strong>{item.price}</strong><small><MapPin /> {item.location}</small></span><ArrowRight /></button><button className="saved-remove" onClick={() => toggleSaved(item.id)} aria-label={`Remove ${item.title} from saved items`}><Heart fill="currentColor" /></button></article>)}</div> : <div className="dashboard-empty"><Heart /><b>No saved products yet</b><span>Tap the heart on any listing and it will appear here.</span></div>}
+          </section>
+        </div>
+      )}
+
       {showImageZoom && selectedListing && (
         <div className="image-lightbox" role="dialog" aria-modal="true" aria-label="Full product image" onClick={() => setShowImageZoom(false)}><button aria-label="Close full product image"><X /></button><img src={galleryImage || selectedListing.image} alt={selectedListing.title} /><div>{selectedListing.title} · {selectedListing.price}</div></div>
       )}
@@ -577,7 +595,7 @@ function App() {
             <button className="modal-close" onClick={() => setShowDashboard(false)} aria-label="Close"><X /></button>
             <div className="dashboard-header"><div className="seller-avatar">{currentUser?.slice(-2) || 'BD'}</div><div><span className="kicker">My BuyDey</span><h2>Welcome back</h2><p>{currentUser}</p></div></div>
             <div className={`verification-card ${verificationStatus}`}><span><IdCard /></span><div><b>{verificationStatus === 'verified' ? 'Verified and trusted seller' : verificationStatus === 'pending' ? 'Identity review in progress' : verificationStatus === 'rejected' ? 'Verification needs attention' : 'Become a verified seller'}</b><p>{verificationStatus === 'verified' ? 'Your trusted badge appears on your listings.' : verificationStatus === 'pending' ? 'Your documents are private and awaiting manual review.' : 'Submit a Ghana Card, passport or driver’s licence and a clear selfie.'}</p></div>{verificationStatus !== 'verified' && verificationStatus !== 'pending' && <button onClick={() => { setShowDashboard(false); setVerificationMessage(''); setShowVerification(true) }}>Verify identity</button>}</div>
-            <div className="dashboard-stats"><div><strong>{myListings.length}</strong><span>My live listings</span></div><div><strong>{saved.length}</strong><span>Saved items</span></div><div><strong>{messages.length}</strong><span>Open chat messages</span></div></div>
+            <div className="dashboard-stats"><div><strong>{myListings.length}</strong><span>My live listings</span></div><button onClick={() => { setShowDashboard(false); setShowSaved(true) }}><strong>{saved.length}</strong><span>View saved items</span></button><div><strong>{messages.length}</strong><span>Open chat messages</span></div></div>
             <div className="dashboard-actions"><button onClick={() => { setShowDashboard(false); setAdSubmitted(false); setShowPostAd(true) }}><Plus /> Post a new ad</button><button onClick={() => { setShowDashboard(false); setShowChat(true) }}><MessageCircle /> Open messages</button></div>
             <h3>My listings</h3>{myListings.length ? <div className="managed-listings">{myListings.map((item) => <div key={item.id}><button className="managed-main" onClick={() => { setShowDashboard(false); setSelectedListing(item) }}><img src={item.image} alt="" /><span><b>{item.title}</b><small>{item.price} · {item.location}</small></span><ArrowRight /></button><div className="managed-actions"><button onClick={() => updateOwnListing(item, 'sold')}>Mark sold</button><button onClick={() => updateOwnListing(item, 'delete')}>Remove</button></div></div>)}</div> : <div className="dashboard-empty"><Store /><b>No live ads yet</b><span>Post your first free listing to start selling.</span></div>}
             <button className="signout-button" onClick={async () => { await supabase.auth.signOut(); localStorage.removeItem('buydey-user'); setCurrentUser(null); setShowDashboard(false) }}>Sign out</button>
