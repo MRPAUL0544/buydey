@@ -1,0 +1,11 @@
+# BuyDey
+
+BuyDey is a Ghana marketplace for searching prices and buying or selling products and services across all 16 regions of Ghana.
+
+Canonical site: https://buydey.vercel.app/
+Marketplace: https://buydey.vercel.app/#market
+Safety centre: https://buydey.vercel.app/safety.html
+Terms: https://buydey.vercel.app/terms.html
+Privacy: https://buydey.vercel.app/privacy.html
+
+BuyDey standard seller listings are free. Buyers should inspect items before payment, keep conversations on BuyDey and prefer identity-verified sellers.

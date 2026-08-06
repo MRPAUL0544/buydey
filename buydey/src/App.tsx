@@ -738,16 +738,21 @@ function App() {
             {filtered.length ? (
               <div className="listing-grid">
                 {filtered.map((item) => (
-                  <article className="listing-card" key={item.id} onClick={() => { setGalleryImage(item.image); setSelectedListing(item) }} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') { setGalleryImage(item.image); setSelectedListing(item) } }}>
+                  <article className="listing-card" key={item.id} itemScope itemType="https://schema.org/Product" onClick={() => { setGalleryImage(item.image); setSelectedListing(item) }} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') { setGalleryImage(item.image); setSelectedListing(item) } }}>
                     <div className="listing-image">
-                      <img src={item.image} alt={item.title} />
+                      <img src={item.image} alt={item.title} itemProp="image" />
                       <div className="card-badges">{typeof item.id === 'number' && <span>Sample listing</span>}{item.promoted && <span>Featured</span>}</div>
                       <button className={`save-button ${saved.includes(item.id) ? 'saved' : ''}`} onClick={(event) => { event.stopPropagation(); toggleSaved(item.id) }} aria-label="Save listing"><Heart size={20} fill={saved.includes(item.id) ? 'currentColor' : 'none'} /></button>
                     </div>
                     <div className="listing-body">
                       <div className="listing-meta"><span>{item.category}</span><span>{item.time}</span></div>
-                      <h3>{item.title}</h3>
-                      <strong className="price">{item.price}</strong>
+                      <h3 itemProp="name">{item.title}</h3>
+                      <span itemProp="offers" itemScope itemType="https://schema.org/Offer">
+                        <meta itemProp="priceCurrency" content="GHS" />
+                        <meta itemProp="availability" content="https://schema.org/InStock" />
+                        <meta itemProp="price" content={item.price.replace(/[^0-9.]/g, '')} />
+                        <strong className="price">{item.price}</strong>
+                      </span>
                       <div className="seller-line"><MapPin size={15} /><span>{item.location}</span>{item.verified && <BadgeCheck size={16} className="verified" />}</div>
                     </div>
                   </article>
