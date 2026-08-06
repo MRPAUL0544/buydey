@@ -24,6 +24,8 @@ type Listing = {
   sellerId?: string
 }
 
+type ChatMessage = { id: string; body: string; senderId?: string }
+
 const ghanaRegions = [
   'Ahafo', 'Ashanti', 'Bono', 'Bono East', 'Central', 'Eastern', 'Greater Accra',
   'North East', 'Northern', 'Oti', 'Savannah', 'Upper East', 'Upper West',
@@ -74,6 +76,7 @@ function App() {
   const [showPostAd, setShowPostAd] = useState(false)
   const [adSubmitted, setAdSubmitted] = useState(false)
   const [currentUser, setCurrentUser] = useState<string | null>(() => localStorage.getItem('buydey-user'))
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
   const [authMessage, setAuthMessage] = useState('')
   const [showVerification, setShowVerification] = useState(false)
@@ -84,21 +87,38 @@ function App() {
   const [galleryImage, setGalleryImage] = useState<string | null>(null)
   const [showImageZoom, setShowImageZoom] = useState(false)
   const [chatText, setChatText] = useState('')
-  const [messages, setMessages] = useState<string[]>(() => JSON.parse(localStorage.getItem('buydey-messages') || '[]') as string[])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [conversationId, setConversationId] = useState<string | null>(null)
 
   useEffect(() => localStorage.setItem('buydey-listings-v2', JSON.stringify(marketListings)), [marketListings])
   useEffect(() => localStorage.setItem('buydey-saved', JSON.stringify(saved)), [saved])
-  useEffect(() => localStorage.setItem('buydey-messages', JSON.stringify(messages)), [messages])
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setCurrentUser(data.session?.user.email || null))
+    supabase.auth.getSession().then(({ data }) => { setCurrentUser(data.session?.user.email || null); setCurrentUserId(data.session?.user.id || null) })
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       const email = session?.user.email || null
       setCurrentUser(email)
+      setCurrentUserId(session?.user.id || null)
       if (email) localStorage.setItem('buydey-user', email)
       else localStorage.removeItem('buydey-user')
     })
     return () => data.subscription.unsubscribe()
   }, [])
+  useEffect(() => {
+    if (!currentUserId) return
+    supabase.from('favorites').select('listing_id').eq('user_id', currentUserId).then(({ data }) => {
+      if (data) setSaved((current) => Array.from(new Set([...current.filter((id) => typeof id === 'number'), ...data.map((row) => row.listing_id)])))
+    })
+  }, [currentUserId])
+  useEffect(() => {
+    if (!conversationId) return
+    const channel = supabase.channel(`conversation-${conversationId}`).on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversationId}`,
+    }, (payload) => {
+      const row = payload.new as { id: string; body: string; sender_id: string }
+      setMessages((current) => current.some((message) => message.id === row.id) ? current : [...current, { id: row.id, body: row.body, senderId: row.sender_id }])
+    }).subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [conversationId])
   useEffect(() => {
     if (!currentUser) return setVerificationStatus('unverified')
     supabase.auth.getUser().then(async ({ data }) => {
@@ -148,9 +168,20 @@ function App() {
     ...marketListings.filter((item) => item.id !== selectedListing.id).map((item) => item.image),
   ])).slice(0, 4) : [], [selectedListing, marketListings])
 
-  const toggleSaved = (id: number | string) => setSaved((current) =>
-    current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
-  )
+  const toggleSaved = async (id: number | string) => {
+    const wasSaved = saved.includes(id)
+    setSaved((current) => wasSaved ? current.filter((item) => item !== id) : [...current, id])
+    if (typeof id === 'number') return
+    const { data } = await supabase.auth.getUser()
+    if (!data.user) {
+      setSaved((current) => current.filter((item) => item !== id))
+      setAuthMessage('Sign in to save real listings to your account.')
+      setShowLogin(true)
+      return
+    }
+    if (wasSaved) await supabase.from('favorites').delete().eq('user_id', data.user.id).eq('listing_id', id)
+    else await supabase.from('favorites').insert({ user_id: data.user.id, listing_id: id })
+  }
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -266,11 +297,55 @@ function App() {
     setVerificationMessage('Submitted successfully. BuyDey will review your identity before awarding the trusted badge.')
   }
 
-  const sendMessage = (event: FormEvent<HTMLFormElement>) => {
+  const openChat = async () => {
+    if (!selectedListing || typeof selectedListing.id === 'number' || !selectedListing.sellerId) {
+      setConversationId(null)
+      setMessages([])
+      setShowChat(true)
+      return
+    }
+    const { data } = await supabase.auth.getUser()
+    if (!data.user) {
+      setAuthMessage('Sign in to chat securely with this seller.')
+      setShowLogin(true)
+      return
+    }
+    if (data.user.id === selectedListing.sellerId) return window.alert('This is your own listing. Buyers will contact you here.')
+    let conversation = await supabase.from('conversations').select('id').eq('listing_id', selectedListing.id).eq('buyer_id', data.user.id).eq('seller_id', selectedListing.sellerId).maybeSingle()
+    if (!conversation.data) conversation = await supabase.from('conversations').insert({ listing_id: selectedListing.id, buyer_id: data.user.id, seller_id: selectedListing.sellerId }).select('id').single()
+    if (conversation.error || !conversation.data) return window.alert(conversation.error?.message || 'Could not start this conversation.')
+    setConversationId(conversation.data.id)
+    const history = await supabase.from('messages').select('id,body,sender_id').eq('conversation_id', conversation.data.id).order('created_at', { ascending: true })
+    setMessages((history.data || []).map((message) => ({ id: message.id, body: message.body, senderId: message.sender_id })))
+    setShowChat(true)
+  }
+
+  const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!chatText.trim()) return
-    setMessages((current) => [...current, chatText.trim()])
+    if (!conversationId || !currentUserId) return window.alert('Open a real listing and sign in before sending a message.')
+    const body = chatText.trim()
     setChatText('')
+    const sent = await supabase.from('messages').insert({ conversation_id: conversationId, sender_id: currentUserId, body }).select('id,body,sender_id').single()
+    if (sent.error) return window.alert(sent.error.message)
+    if (sent.data) setMessages((current) => current.some((message) => message.id === sent.data.id) ? current : [...current, { id: sent.data.id, body: sent.data.body, senderId: sent.data.sender_id }])
+  }
+
+  const resetPassword = async () => {
+    const email = window.prompt('Enter your BuyDey email address')?.trim()
+    if (!email) return
+    const result = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/` })
+    setAuthMessage(result.error ? result.error.message : 'Password reset email sent. Check your inbox.')
+  }
+
+  const reportListing = async () => {
+    if (!selectedListing || typeof selectedListing.id === 'number') return window.alert('Sample listings do not need reports.')
+    const { data } = await supabase.auth.getUser()
+    if (!data.user) { setAuthMessage('Sign in to report a listing.'); setShowLogin(true); return }
+    const reason = window.prompt('Why are you reporting this listing? (scam, prohibited item, duplicate, wrong information)')?.trim()
+    if (!reason) return
+    const report = await supabase.from('reports').insert({ reporter_id: data.user.id, listing_id: selectedListing.id, reason })
+    window.alert(report.error ? report.error.message : 'Report received. BuyDey will review this listing.')
   }
 
   return (
@@ -429,8 +504,9 @@ function App() {
               <div className="seller-box">
                 <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.verified ? 'Trusted' : 'New'}</b>
               </div>
-              <div className="detail-actions"><button onClick={() => setShowChat(true)}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
+              <div className="detail-actions"><button onClick={openChat}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
               <p className="safety-note"><ShieldCheck /> Never pay before inspecting an item in person.</p>
+              <button className="report-button" onClick={reportListing}>Report suspicious listing</button>
             </div>
           </section>
         </div>
@@ -446,7 +522,7 @@ function App() {
               {authMode === 'signup' && <label>Ghana phone number<input name="phone" type="tel" placeholder="e.g. 024 123 4567" required /></label>}
               <label>Email address<input name="email" type="email" placeholder="you@example.com" required /></label>
               <label>Password<input name="password" type="password" placeholder="Enter your password" required /></label>
-              <div className="form-helper"><label><input type="checkbox" /> Remember me</label><button type="button">Forgot password?</button></div>
+              <div className="form-helper"><label><input type="checkbox" /> Remember me</label><button type="button" onClick={resetPassword}>Forgot password?</button></div>
               {authMessage && <p className="auth-message">{authMessage}</p>}
               <button className="primary-form-button" type="submit">{authMode === 'signup' ? 'Create free account' : 'Sign in'} <ArrowRight /></button>
             </form>
@@ -517,7 +593,7 @@ function App() {
             <button className="modal-close" onClick={() => setShowChat(false)} aria-label="Close"><X /></button>
             <div className="chat-header"><div className="seller-avatar">{(selectedListing?.sellerName || 'BD').slice(0,2).toUpperCase()}</div><div><b>{selectedListing?.sellerName || 'BuyDey messages'}</b><span><i /> Keep payments and conversations safe</span></div></div>
             <div className="chat-context">{selectedListing && <><img src={selectedListing.image} alt="" /><span><b>{selectedListing.title}</b><small>{selectedListing.price}</small></span></>}</div>
-            <div className="chat-messages"><div className="message incoming">Hello 👋 Is this item still available?</div>{messages.map((message, index) => <div className="message outgoing" key={`${message}-${index}`}>{message}<small>Delivered</small></div>)}</div>
+            <div className="chat-messages">{!conversationId && <div className="message incoming">Open a real community listing to begin a secure conversation. Sample listings cannot receive messages.</div>}{conversationId && !messages.length && <div className="message incoming">No messages yet. Ask the seller whether the item is still available.</div>}{messages.map((message) => <div className={`message ${message.senderId === currentUserId ? 'outgoing' : 'incoming'}`} key={message.id}>{message.body}{message.senderId === currentUserId && <small>Delivered</small>}</div>)}</div>
             <form className="chat-form" onSubmit={sendMessage}><input value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="Type a message..." aria-label="Message" /><button type="submit" aria-label="Send message"><ArrowRight /></button></form>
           </section>
         </div>
