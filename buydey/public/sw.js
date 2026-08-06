@@ -1,4 +1,4 @@
-const CACHE = 'buydey-v1'
+const CACHE = 'buydey-v2'
 const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg']
 
 self.addEventListener('install', (event) => {
@@ -13,7 +13,12 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
+  const url = new URL(event.request.url)
+  // Never cache Supabase, authentication, private documents or any cross-origin response.
+  if (url.origin !== self.location.origin) return
+  if (url.pathname.startsWith('/auth/') || url.pathname.includes('verification-documents')) return
   event.respondWith(fetch(event.request).then((response) => {
+    if (!response.ok || response.type !== 'basic') return response
     const copy = response.clone()
     caches.open(CACHE).then((cache) => cache.put(event.request, copy))
     return response
