@@ -26,6 +26,7 @@ type Listing = {
   rating?: number
   reviewCount?: number
   viewCount?: number
+  phone?: string
 }
 
 type ChatMessage = { id: string; body: string; senderId?: string }
@@ -124,6 +125,7 @@ function App() {
   const [adminReviews, setAdminReviews] = useState<ModeratedReview[]>([])
   const [adminQuestions, setAdminQuestions] = useState<ModeratedQuestion[]>([])
   const [adminCategories, setAdminCategories] = useState<AdminCategory[]>([])
+  const [phoneMessage, setPhoneMessage] = useState('')
 
   const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset || showNotifications || showSupport)
 
@@ -203,7 +205,7 @@ function App() {
   }, [currentUser])
   useEffect(() => {
     supabase.from('listings')
-      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,view_count,categories(name),listing_images(storage_path,position),seller_reviews(rating)')
+      .select('id,seller_id,title,description,condition,price,phone,location,created_at,promoted,view_count,categories(name),listing_images(storage_path,position),seller_reviews(rating)')
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .then(async ({ data }) => {
@@ -235,9 +237,11 @@ function App() {
             rating: reviewRatings.length ? reviewRatings.reduce((total: number, value: number) => total + value, 0) / reviewRatings.length : undefined,
             reviewCount: reviewRatings.length,
             viewCount: Number(row.view_count || 0),
+            phone: row.phone || undefined,
           }
         })
-        setMarketListings((current) => [...online, ...current.filter((item) => !online.some((live) => live.id === item.id))])
+        // Demo cards only fill a completely empty marketplace. Real seller ads replace them automatically.
+        setMarketListings(online)
       })
   }, [])
 
@@ -281,6 +285,25 @@ function App() {
     }
     if (wasSaved) await supabase.from('favorites').delete().eq('user_id', data.user.id).eq('listing_id', id)
     else await supabase.from('favorites').insert({ user_id: data.user.id, listing_id: id })
+  }
+
+  const showSellerNumber = async () => {
+    if (!selectedListing) return
+    if (typeof selectedListing.id === 'number') {
+      setPhoneMessage('This is a sample listing, so there is no real seller phone number.')
+      return
+    }
+    if (selectedListing.phone) {
+      setPhoneMessage(selectedListing.phone)
+      return
+    }
+    const result = await supabase.from('listings').select('phone').eq('id', selectedListing.id).eq('status', 'active').single()
+    if (result.error || !result.data?.phone) {
+      setPhoneMessage('This seller has not added a phone number. Please use BuyDey chat.')
+      return
+    }
+    setSelectedListing((current) => current ? { ...current, phone: result.data.phone } : current)
+    setPhoneMessage(result.data.phone)
   }
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -329,6 +352,7 @@ function App() {
       location: fullLocation, time: 'Just now', category: categoryName,
       image: imageByCategory[categoryName] || listings[0].image, verified: Boolean(currentUser),
       description: String(form.get('description')), condition: String(form.get('condition')),
+      phone: String(form.get('phone')).trim(),
       sellerId: user.id, sellerName: String(user.user_metadata.full_name || currentUser || 'BuyDey seller'),
     }
     const { data: categoryRow, error: categoryError } = await supabase.from('categories').select('id').eq('name', categoryName).single()
@@ -343,6 +367,7 @@ function App() {
       region,
       town,
       condition: String(form.get('condition')),
+      phone: String(form.get('phone')).trim(),
       status: 'active',
     }).select('id').single()
     if (listingError) return window.alert(listingError.message)
@@ -357,7 +382,7 @@ function App() {
       await supabase.from('listing_images').insert({ listing_id: created.id, storage_path: path, position: index })
       if (index === 0) newListing.image = supabase.storage.from('listing-images').getPublicUrl(path).data.publicUrl
     }
-    setMarketListings((current) => [newListing, ...current])
+    setMarketListings((current) => [newListing, ...current.filter((item) => typeof item.id !== 'number')])
     setAdSubmitted(true)
   }
 
@@ -738,7 +763,7 @@ function App() {
             {filtered.length ? (
               <div className="listing-grid">
                 {filtered.map((item) => (
-                  <article className="listing-card" key={item.id} itemScope itemType="https://schema.org/Product" onClick={() => { setGalleryImage(item.image); setSelectedListing(item) }} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') { setGalleryImage(item.image); setSelectedListing(item) } }}>
+                  <article className="listing-card" key={item.id} itemScope itemType="https://schema.org/Product" onClick={() => { setPhoneMessage(''); setGalleryImage(item.image); setSelectedListing(item) }} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter') { setPhoneMessage(''); setGalleryImage(item.image); setSelectedListing(item) } }}>
                     <div className="listing-image">
                       <img src={item.image} alt={item.title} itemProp="image" />
                       <div className="card-badges">{typeof item.id === 'number' && <span>Sample listing</span>}{item.promoted && <span>Featured</span>}</div>
@@ -814,7 +839,7 @@ function App() {
               <div className="seller-box">
                 <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.rating ? `${selectedListing.rating.toFixed(1)} (${selectedListing.reviewCount})` : selectedListing.verified ? 'Trusted' : 'New'}</b>
               </div>
-              <div className="detail-actions"><button onClick={openChat}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
+              <div className="detail-actions"><button onClick={openChat}><MessageCircle /> Chat with seller</button><button onClick={showSellerNumber}><Phone /> {phoneMessage || 'Show number'}</button></div>
               {typeof selectedListing.id !== 'number' && <button className="rate-seller-button" onClick={submitSellerReview}><Star /> Rate this seller</button>}
               <p className="safety-note"><ShieldCheck /> Never pay before inspecting an item in person.</p>
               <button className="report-button" onClick={reportListing}>Report suspicious listing</button>
@@ -871,6 +896,7 @@ function App() {
                 <div className="form-grid"><label>Ad title<input name="title" placeholder="e.g. iPhone 15 Pro Max 256GB" required /></label><label>Category<select name="category" required defaultValue=""><option value="" disabled>Select a category</option>{categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>
                 <div className="form-grid"><label>Price (GH₵)<input name="price" type="number" min="1" placeholder="0.00" required /></label><label>Condition<select name="condition" required defaultValue=""><option value="" disabled>Select condition</option><option>Brand New</option><option>Used</option><option>Refurbished</option><option>For Parts</option></select></label></div>
                 <div className="form-grid"><label>Region<select name="region" required defaultValue=""><option value="" disabled>Select one of Ghana's 16 regions</option>{ghanaRegions.map((region) => <option key={region}>{region}</option>)}</select></label><label>Town / area<input name="town" placeholder="e.g. East Legon, Adum, Ho Central" required /></label></div>
+                <label>Seller phone number<input name="phone" type="tel" inputMode="tel" placeholder="e.g. 024 123 4567" minLength={10} maxLength={20} required /></label>
                 <label>Description<textarea name="description" placeholder="Describe the condition, important features and what is included..." rows={4} required /></label>
                 <button className="primary-form-button" type="submit"><Plus /> Create listing draft</button>
               </form>
