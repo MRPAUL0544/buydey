@@ -69,6 +69,7 @@ function App() {
   })
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All')
+  const [regionFilter, setRegionFilter] = useState('All Ghana')
   const [saved, setSaved] = useState<Array<number | string>>(() => JSON.parse(localStorage.getItem('buydey-saved') || '[4]') as Array<number | string>)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [selectedListing, setSelectedListing] = useState<Listing | null>(null)
@@ -158,9 +159,12 @@ function App() {
 
   const filtered = useMemo(() => marketListings.filter((item) => {
     const matchesCategory = category === 'All' || item.category === category
+    const matchesRegion = regionFilter === 'All Ghana' || item.location.toLowerCase().includes(regionFilter.toLowerCase())
     const haystack = `${item.title} ${item.location} ${item.category}`.toLowerCase()
-    return matchesCategory && haystack.includes(query.toLowerCase())
-  }), [query, category])
+    return matchesCategory && matchesRegion && haystack.includes(query.toLowerCase())
+  }), [query, category, regionFilter, marketListings])
+
+  const myListings = useMemo(() => currentUserId ? marketListings.filter((item) => item.sellerId === currentUserId) : [], [marketListings, currentUserId])
 
   const galleryImages = useMemo(() => selectedListing ? Array.from(new Set([
     selectedListing.image,
@@ -229,6 +233,7 @@ function App() {
       location: fullLocation, time: 'Just now', category: categoryName,
       image: imageByCategory[categoryName] || listings[0].image, verified: Boolean(currentUser),
       description: String(form.get('description')), condition: String(form.get('condition')),
+      sellerId: user.id, sellerName: String(user.user_metadata.full_name || currentUser || 'BuyDey seller'),
     }
     const { data: categoryRow, error: categoryError } = await supabase.from('categories').select('id').eq('name', categoryName).single()
     if (categoryError) return window.alert(categoryError.message)
@@ -348,6 +353,17 @@ function App() {
     window.alert(report.error ? report.error.message : 'Report received. BuyDey will review this listing.')
   }
 
+  const updateOwnListing = async (listing: Listing, action: 'sold' | 'delete') => {
+    if (typeof listing.id === 'number') return
+    const confirmed = window.confirm(action === 'sold' ? 'Mark this listing as sold?' : 'Permanently remove this listing?')
+    if (!confirmed) return
+    const result = action === 'sold'
+      ? await supabase.from('listings').update({ status: 'sold' }).eq('id', listing.id)
+      : await supabase.from('listings').delete().eq('id', listing.id)
+    if (result.error) return window.alert(result.error.message)
+    setMarketListings((current) => current.filter((item) => item.id !== listing.id))
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -398,7 +414,7 @@ function App() {
                   <Search size={22} />
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="What are you looking for?" aria-label="Search listings" />
                 </div>
-                <button className="location-select"><MapPin size={20} /><span>All Ghana</span><ChevronDown size={17} /></button>
+                <select className="location-select" aria-label="Filter by Ghana region" value={regionFilter} onChange={(event) => setRegionFilter(event.target.value)}><option>All Ghana</option>{ghanaRegions.map((region) => <option key={region}>{region}</option>)}</select>
                 <a className="search-button" href="#market">Search</a>
               </div>
               <div className="popular-searches"><span>Popular:</span><button onClick={() => setQuery('iPhone')}>iPhone 15</button><button onClick={() => setQuery('Toyota')}>Toyota Corolla</button><button onClick={() => setQuery('house')}>Houses for rent</button></div>
@@ -561,9 +577,9 @@ function App() {
             <button className="modal-close" onClick={() => setShowDashboard(false)} aria-label="Close"><X /></button>
             <div className="dashboard-header"><div className="seller-avatar">{currentUser?.slice(-2) || 'BD'}</div><div><span className="kicker">My BuyDey</span><h2>Welcome back</h2><p>{currentUser}</p></div></div>
             <div className={`verification-card ${verificationStatus}`}><span><IdCard /></span><div><b>{verificationStatus === 'verified' ? 'Verified and trusted seller' : verificationStatus === 'pending' ? 'Identity review in progress' : verificationStatus === 'rejected' ? 'Verification needs attention' : 'Become a verified seller'}</b><p>{verificationStatus === 'verified' ? 'Your trusted badge appears on your listings.' : verificationStatus === 'pending' ? 'Your documents are private and awaiting manual review.' : 'Submit a Ghana Card, passport or driver’s licence and a clear selfie.'}</p></div>{verificationStatus !== 'verified' && verificationStatus !== 'pending' && <button onClick={() => { setShowDashboard(false); setVerificationMessage(''); setShowVerification(true) }}>Verify identity</button>}</div>
-            <div className="dashboard-stats"><div><strong>{marketListings.length}</strong><span>Live listings</span></div><div><strong>{saved.length}</strong><span>Saved items</span></div><div><strong>{messages.length}</strong><span>Messages</span></div></div>
+            <div className="dashboard-stats"><div><strong>{myListings.length}</strong><span>My live listings</span></div><div><strong>{saved.length}</strong><span>Saved items</span></div><div><strong>{messages.length}</strong><span>Open chat messages</span></div></div>
             <div className="dashboard-actions"><button onClick={() => { setShowDashboard(false); setAdSubmitted(false); setShowPostAd(true) }}><Plus /> Post a new ad</button><button onClick={() => { setShowDashboard(false); setShowChat(true) }}><MessageCircle /> Open messages</button></div>
-            <h3>Recently listed</h3><div className="mini-listings">{marketListings.slice(0, 3).map((item) => <button key={item.id} onClick={() => { setShowDashboard(false); setSelectedListing(item) }}><img src={item.image} alt="" /><span><b>{item.title}</b><small>{item.price} · {item.location}</small></span><ArrowRight /></button>)}</div>
+            <h3>My listings</h3>{myListings.length ? <div className="managed-listings">{myListings.map((item) => <div key={item.id}><button className="managed-main" onClick={() => { setShowDashboard(false); setSelectedListing(item) }}><img src={item.image} alt="" /><span><b>{item.title}</b><small>{item.price} · {item.location}</small></span><ArrowRight /></button><div className="managed-actions"><button onClick={() => updateOwnListing(item, 'sold')}>Mark sold</button><button onClick={() => updateOwnListing(item, 'delete')}>Remove</button></div></div>)}</div> : <div className="dashboard-empty"><Store /><b>No live ads yet</b><span>Post your first free listing to start selling.</span></div>}
             <button className="signout-button" onClick={async () => { await supabase.auth.signOut(); localStorage.removeItem('buydey-user'); setCurrentUser(null); setShowDashboard(false) }}>Sign out</button>
           </section>
         </div>
