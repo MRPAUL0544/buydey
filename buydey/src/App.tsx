@@ -171,7 +171,13 @@ function App() {
   }, [currentUserId])
   useEffect(() => {
     if (!selectedListing || typeof selectedListing.id === 'number') { setProductQuestions([]); return }
-    supabase.from('listing_questions').select('id,user_id,parent_id,body,created_at,author:profiles!listing_questions_user_id_fkey(full_name)').eq('listing_id', selectedListing.id).eq('status', 'published').order('created_at').then(({ data }) => setProductQuestions((data || []) as unknown as ProductQuestion[]))
+    supabase.from('listing_questions').select('id,user_id,parent_id,body,created_at').eq('listing_id', selectedListing.id).eq('status', 'published').order('created_at').then(async ({ data }) => {
+      const rows = (data || []) as ProductQuestion[]
+      const userIds = Array.from(new Set(rows.map((item) => item.user_id)))
+      const profiles = userIds.length ? await supabase.from('seller_public_profiles').select('id,full_name').in('id', userIds) : { data: [] }
+      const names = new Map((profiles.data || []).map((profile: { id: string; full_name: string }) => [profile.id, profile.full_name]))
+      setProductQuestions(rows.map((item) => ({ ...item, author: { full_name: names.get(item.user_id) || 'BuyDey user' } })))
+    })
   }, [selectedListing?.id])
   useEffect(() => {
     if (!selectedListing || typeof selectedListing.id === 'number') return
@@ -197,14 +203,18 @@ function App() {
   }, [currentUser])
   useEffect(() => {
     supabase.from('listings')
-      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,view_count,categories(name),profiles(full_name,verified),listing_images(storage_path,position),seller_reviews(rating)')
+      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,view_count,categories(name),listing_images(storage_path,position),seller_reviews(rating)')
       .eq('status', 'active')
       .order('created_at', { ascending: false })
-      .then(({ data }) => {
+      .then(async ({ data }) => {
         if (!data?.length) return
+        const sellerIds = Array.from(new Set(data.map((row: any) => row.seller_id)))
+        const publicProfiles = await supabase.from('seller_public_profiles').select('id,full_name,verified').in('id', sellerIds)
+        const sellerProfiles = new Map((publicProfiles.data || []).map((profile: { id: string; full_name: string; verified: boolean }) => [profile.id, profile]))
         const online = data.map((row: any): Listing => {
           const firstPhoto = [...(row.listing_images || [])].sort((a, b) => a.position - b.position)[0]
           const reviewRatings = (row.seller_reviews || []).map((review: { rating: number }) => Number(review.rating))
+          const sellerProfile = sellerProfiles.get(row.seller_id)
           return {
             id: row.id,
             title: row.title,
@@ -220,8 +230,8 @@ function App() {
             description: row.description,
             condition: row.condition,
             sellerId: row.seller_id,
-            sellerName: row.profiles?.full_name || 'BuyDey seller',
-            verified: Boolean(row.profiles?.verified),
+            sellerName: sellerProfile?.full_name || 'BuyDey seller',
+            verified: Boolean(sellerProfile?.verified),
             rating: reviewRatings.length ? reviewRatings.reduce((total: number, value: number) => total + value, 0) / reviewRatings.length : undefined,
             reviewCount: reviewRatings.length,
             viewCount: Number(row.view_count || 0),
