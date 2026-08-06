@@ -8,6 +8,19 @@ create or replace function public.current_user_is_admin()
 returns boolean language sql stable security definer set search_path=public
 as $$ select coalesce((select is_admin from public.profiles where id=auth.uid()),false) $$;
 
+create or replace function public.protect_profile_security_fields()
+returns trigger language plpgsql security definer set search_path=public as $$
+begin
+  if (new.is_admin is distinct from old.is_admin or new.account_status is distinct from old.account_status)
+     and not public.current_user_is_admin() then
+    raise exception 'Only administrators may change account security fields';
+  end if;
+  return new;
+end $$;
+drop trigger if exists protect_profile_security_fields on public.profiles;
+create trigger protect_profile_security_fields before update on public.profiles
+for each row execute procedure public.protect_profile_security_fields();
+
 create policy "profiles_admin_update" on public.profiles for update to authenticated
 using (public.current_user_is_admin()) with check (public.current_user_is_admin());
 create policy "listings_admin_update" on public.listings for update to authenticated
