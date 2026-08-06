@@ -4,7 +4,7 @@ import {
   Baby, BriefcaseBusiness, CheckCircle2, Dumbbell, Hammer, Heart, Home, Laptop,
   LockKeyhole, MapPin, Menu, MessageCircle, PawPrint, Phone, Plus, Search,
   ShieldCheck, Shirt, ShoppingBag, Smartphone, Sparkles, SprayCan, Star, Store,
-  Tractor, Upload, UserRound, Wrench, X, IdCard,
+  Tractor, Upload, UserRound, Wrench, X, IdCard, ShieldAlert, Ban, ExternalLink,
 } from 'lucide-react'
 import { supabase } from './supabase'
 
@@ -26,6 +26,8 @@ type Listing = {
 }
 
 type ChatMessage = { id: string; body: string; senderId?: string }
+type VerificationReview = { id: string; user_id: string; document_type: string; document_number_last4: string; front_path: string; back_path?: string; selfie_path: string; status: string; submitted_at: string; profiles?: { full_name?: string; phone?: string } }
+type ListingReport = { id: string; listing_id: string; reason: string; details?: string; status: string; created_at: string; listings?: { title?: string; seller_id?: string; location?: string }; profiles?: { full_name?: string } }
 
 const ghanaRegions = [
   'Ahafo', 'Ashanti', 'Bono', 'Bono East', 'Central', 'Eastern', 'Greater Accra',
@@ -92,8 +94,13 @@ function App() {
   const [chatText, setChatText] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [showAdmin, setShowAdmin] = useState(false)
+  const [verificationQueue, setVerificationQueue] = useState<VerificationReview[]>([])
+  const [reportQueue, setReportQueue] = useState<ListingReport[]>([])
+  const [adminMessage, setAdminMessage] = useState('')
 
-  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom)
+  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin)
 
   useEffect(() => localStorage.setItem('buydey-listings-v2', JSON.stringify(marketListings)), [marketListings])
   useEffect(() => localStorage.setItem('buydey-saved', JSON.stringify(saved)), [saved])
@@ -130,11 +137,12 @@ function App() {
     return () => { document.body.style.overflow = previous }
   }, [anyModalOpen])
   useEffect(() => {
-    if (!currentUser) return setVerificationStatus('unverified')
+    if (!currentUser) { setVerificationStatus('unverified'); setIsAdmin(false); return }
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) return
-      const profile = await supabase.from('profiles').select('verification_status').eq('id', data.user.id).single()
+      const profile = await supabase.from('profiles').select('verification_status,is_admin').eq('id', data.user.id).single()
       if (profile.data?.verification_status) setVerificationStatus(profile.data.verification_status)
+      setIsAdmin(Boolean(profile.data?.is_admin))
     })
   }, [currentUser])
   useEffect(() => {
@@ -387,6 +395,53 @@ function App() {
     setMarketListings((current) => current.filter((item) => item.id !== listing.id))
   }
 
+  const loadAdminQueues = async () => {
+    setAdminMessage('Loading moderation queues...')
+    const [verificationResult, reportResult] = await Promise.all([
+      supabase.from('verification_requests').select('id,user_id,document_type,document_number_last4,front_path,back_path,selfie_path,status,submitted_at,profiles(full_name,phone)').eq('status', 'pending').order('submitted_at'),
+      supabase.from('reports').select('id,listing_id,reason,details,status,created_at,listings(title,seller_id,location),profiles(full_name)').in('status', ['open', 'reviewing']).order('created_at'),
+    ])
+    if (verificationResult.error || reportResult.error) return setAdminMessage(verificationResult.error?.message || reportResult.error?.message || 'Could not load queues.')
+    setVerificationQueue((verificationResult.data || []) as unknown as VerificationReview[])
+    setReportQueue((reportResult.data || []) as unknown as ListingReport[])
+    setAdminMessage('')
+  }
+
+  const openAdmin = () => {
+    setShowDashboard(false)
+    setShowAdmin(true)
+    void loadAdminQueues()
+  }
+
+  const openPrivateDocument = async (path?: string) => {
+    if (!path) return
+    const result = await supabase.storage.from('verification-documents').createSignedUrl(path, 120)
+    if (result.error) return window.alert(result.error.message)
+    window.open(result.data.signedUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  const reviewVerification = async (request: VerificationReview, decision: 'approved' | 'rejected') => {
+    const note = decision === 'rejected' ? window.prompt('Reason for rejection (shown to the seller):')?.trim() : 'Identity documents approved by BuyDey moderation.'
+    if (decision === 'rejected' && !note) return
+    if (!window.confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} this identity request?`)) return
+    const result = await supabase.rpc('review_verification', { request_id: request.id, decision, note })
+    if (result.error) return window.alert(result.error.message)
+    setVerificationQueue((current) => current.filter((item) => item.id !== request.id))
+    setAdminMessage(`Identity request ${decision}.`)
+  }
+
+  const moderateReport = async (report: ListingReport, action: 'remove' | 'dismiss' | 'suspend') => {
+    const message = action === 'remove' ? 'Archive this reported listing?' : action === 'suspend' ? 'Suspend this seller and archive the listing?' : 'Dismiss this report as safe?'
+    if (!window.confirm(message)) return
+    if (action === 'remove' || action === 'suspend') await supabase.from('listings').update({ status: 'archived' }).eq('id', report.listing_id)
+    if (action === 'suspend' && report.listings?.seller_id) await supabase.from('profiles').update({ account_status: 'suspended' }).eq('id', report.listings.seller_id)
+    const result = await supabase.from('reports').update({ status: action === 'dismiss' ? 'dismissed' : 'resolved' }).eq('id', report.id)
+    if (result.error) return window.alert(result.error.message)
+    setReportQueue((current) => current.filter((item) => item.id !== report.id))
+    if (action !== 'dismiss') setMarketListings((current) => current.filter((item) => item.id !== report.listing_id))
+    setAdminMessage(action === 'dismiss' ? 'Report dismissed.' : 'Safety action completed.')
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -612,7 +667,7 @@ function App() {
             <div className="dashboard-header"><div className="seller-avatar">{currentUser?.slice(-2) || 'BD'}</div><div><span className="kicker">My BuyDey</span><h2>Welcome back</h2><p>{currentUser}</p></div></div>
             <div className={`verification-card ${verificationStatus}`}><span><IdCard /></span><div><b>{verificationStatus === 'verified' ? 'Verified and trusted seller' : verificationStatus === 'pending' ? 'Identity review in progress' : verificationStatus === 'rejected' ? 'Verification needs attention' : 'Become a verified seller'}</b><p>{verificationStatus === 'verified' ? 'Your trusted badge appears on your listings.' : verificationStatus === 'pending' ? 'Your documents are private and awaiting manual review.' : 'Submit a Ghana Card, passport or driver’s licence and a clear selfie.'}</p></div>{verificationStatus !== 'verified' && verificationStatus !== 'pending' && <button onClick={() => { setShowDashboard(false); setVerificationMessage(''); setShowVerification(true) }}>Verify identity</button>}</div>
             <div className="dashboard-stats"><div><strong>{myListings.length}</strong><span>My live listings</span></div><button onClick={() => { setShowDashboard(false); setShowSaved(true) }}><strong>{saved.length}</strong><span>View saved items</span></button><div><strong>{messages.length}</strong><span>Open chat messages</span></div></div>
-            <div className="dashboard-actions"><button onClick={() => { setShowDashboard(false); setAdSubmitted(false); setShowPostAd(true) }}><Plus /> Post a new ad</button><button onClick={() => { setShowDashboard(false); setShowChat(true) }}><MessageCircle /> Open messages</button></div>
+            <div className="dashboard-actions"><button onClick={() => { setShowDashboard(false); setAdSubmitted(false); setShowPostAd(true) }}><Plus /> Post a new ad</button><button onClick={() => { setShowDashboard(false); setShowChat(true) }}><MessageCircle /> Open messages</button>{isAdmin && <button className="admin-entry" onClick={openAdmin}><ShieldAlert /> Trust & safety admin</button>}</div>
             <h3>My listings</h3>{myListings.length ? <div className="managed-listings">{myListings.map((item) => <div key={item.id}><button className="managed-main" onClick={() => { setShowDashboard(false); setSelectedListing(item) }}><img src={item.image} alt="" /><span><b>{item.title}</b><small>{item.price} · {item.location}</small></span><ArrowRight /></button><div className="managed-actions"><button onClick={() => updateOwnListing(item, 'sold')}>Mark sold</button><button onClick={() => updateOwnListing(item, 'delete')}>Remove</button></div></div>)}</div> : <div className="dashboard-empty"><Store /><b>No live ads yet</b><span>Post your first free listing to start selling.</span></div>}
             <button className="signout-button" onClick={async () => { await supabase.auth.signOut(); localStorage.removeItem('buydey-user'); setCurrentUser(null); setShowDashboard(false) }}>Sign out</button>
           </section>
@@ -633,6 +688,20 @@ function App() {
               {verificationMessage && <p className="auth-message">{verificationMessage}</p>}
               <button className="primary-form-button" type="submit"><BadgeCheck /> Submit for review</button>
             </form>
+          </section>
+        </div>
+      )}
+
+      {showAdmin && isAdmin && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowAdmin(false)}>
+          <section className="modal-card admin-modal" role="dialog" aria-modal="true" aria-label="BuyDey trust and safety administration" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowAdmin(false)} aria-label="Close"><X /></button>
+            <div className="admin-heading"><span className="auth-icon"><ShieldAlert /></span><div><span className="kicker">Restricted access</span><h2>Trust & safety centre</h2><p>Review identities and act on suspicious marketplace activity.</p></div><button onClick={loadAdminQueues}>Refresh queues</button></div>
+            {adminMessage && <p className="admin-message">{adminMessage}</p>}
+            <div className="admin-columns">
+              <section><div className="queue-title"><div><h3>Identity reviews</h3><p>Private documents · {verificationQueue.length} pending</p></div><IdCard /></div>{verificationQueue.length ? <div className="moderation-list">{verificationQueue.map((request) => <article key={request.id}><div><b>{request.profiles?.full_name || 'BuyDey seller'}</b><small>{request.document_type.replace('_', ' ')} · ending {request.document_number_last4}</small><small>Submitted {new Date(request.submitted_at).toLocaleDateString()}</small></div><div className="document-actions"><button onClick={() => openPrivateDocument(request.front_path)}><ExternalLink /> ID front</button>{request.back_path && <button onClick={() => openPrivateDocument(request.back_path)}><ExternalLink /> ID back</button>}<button onClick={() => openPrivateDocument(request.selfie_path)}><ExternalLink /> Selfie</button></div><div className="decision-actions"><button onClick={() => reviewVerification(request, 'approved')}><BadgeCheck /> Approve</button><button onClick={() => reviewVerification(request, 'rejected')}><X /> Reject</button></div></article>)}</div> : <div className="dashboard-empty"><CheckCircle2 /><b>Identity queue is clear</b><span>New verification requests will appear here.</span></div>}</section>
+              <section><div className="queue-title"><div><h3>Reported listings</h3><p>Community reports · {reportQueue.length} open</p></div><ShieldAlert /></div>{reportQueue.length ? <div className="moderation-list">{reportQueue.map((report) => <article key={report.id}><div><b>{report.listings?.title || 'Reported listing'}</b><small>{report.reason} · {report.listings?.location}</small><small>Reported by {report.profiles?.full_name || 'community member'}</small></div><div className="decision-actions report-decisions"><button onClick={() => moderateReport(report, 'remove')}><Ban /> Remove ad</button><button onClick={() => moderateReport(report, 'suspend')}><ShieldAlert /> Suspend seller</button><button onClick={() => moderateReport(report, 'dismiss')}><CheckCircle2 /> Dismiss</button></div></article>)}</div> : <div className="dashboard-empty"><CheckCircle2 /><b>Report queue is clear</b><span>New marketplace reports will appear here.</span></div>}</section>
+            </div>
           </section>
         </div>
       )}
