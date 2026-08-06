@@ -28,6 +28,8 @@ type Listing = {
 type ChatMessage = { id: string; body: string; senderId?: string }
 type VerificationReview = { id: string; user_id: string; document_type: string; document_number_last4: string; front_path: string; back_path?: string; selfie_path: string; status: string; submitted_at: string; profiles?: { full_name?: string; phone?: string } }
 type ListingReport = { id: string; listing_id: string; reason: string; details?: string; status: string; created_at: string; listings?: { title?: string; seller_id?: string; location?: string }; profiles?: { full_name?: string } }
+type AdminUser = { id: string; full_name?: string; phone?: string; verified: boolean; verification_status: string; account_status: 'active' | 'suspended'; created_at: string }
+type AdminListing = { id: string; seller_id: string; title: string; price: number; location: string; status: 'draft' | 'active' | 'sold' | 'archived'; created_at: string; categories?: { name?: string }; profiles?: { full_name?: string } }
 
 const ghanaRegions = [
   'Ahafo', 'Ashanti', 'Bono', 'Bono East', 'Central', 'Eastern', 'Greater Accra',
@@ -101,6 +103,8 @@ function App() {
   const [adminMessage, setAdminMessage] = useState('')
   const [showPasswordReset, setShowPasswordReset] = useState(false)
   const [passwordResetMessage, setPasswordResetMessage] = useState('')
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([])
+  const [adminListings, setAdminListings] = useState<AdminListing[]>([])
 
   const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset)
 
@@ -417,13 +421,17 @@ function App() {
 
   const loadAdminQueues = async () => {
     setAdminMessage('Loading moderation queues...')
-    const [verificationResult, reportResult] = await Promise.all([
+    const [verificationResult, reportResult, usersResult, listingsResult] = await Promise.all([
       supabase.from('verification_requests').select('id,user_id,document_type,document_number_last4,front_path,back_path,selfie_path,status,submitted_at,profiles(full_name,phone)').eq('status', 'pending').order('submitted_at'),
       supabase.from('reports').select('id,listing_id,reason,details,status,created_at,listings(title,seller_id,location),profiles(full_name)').in('status', ['open', 'reviewing']).order('created_at'),
+      supabase.from('profiles').select('id,full_name,phone,verified,verification_status,account_status,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('listings').select('id,seller_id,title,price,location,status,created_at,categories(name),profiles(full_name)').order('created_at', { ascending: false }).limit(100),
     ])
-    if (verificationResult.error || reportResult.error) return setAdminMessage(verificationResult.error?.message || reportResult.error?.message || 'Could not load queues.')
+    if (verificationResult.error || reportResult.error || usersResult.error || listingsResult.error) return setAdminMessage(verificationResult.error?.message || reportResult.error?.message || usersResult.error?.message || listingsResult.error?.message || 'Could not load administration data.')
     setVerificationQueue((verificationResult.data || []) as unknown as VerificationReview[])
     setReportQueue((reportResult.data || []) as unknown as ListingReport[])
+    setAdminUsers((usersResult.data || []) as AdminUser[])
+    setAdminListings((listingsResult.data || []) as unknown as AdminListing[])
     setAdminMessage('')
   }
 
@@ -460,6 +468,32 @@ function App() {
     setReportQueue((current) => current.filter((item) => item.id !== report.id))
     if (action !== 'dismiss') setMarketListings((current) => current.filter((item) => item.id !== report.listing_id))
     setAdminMessage(action === 'dismiss' ? 'Report dismissed.' : 'Safety action completed.')
+  }
+
+  const recordModeration = async (action: string, targetType: 'user' | 'listing', targetId: string, details: string) => {
+    if (!currentUserId) return
+    await supabase.from('moderation_actions').insert({ admin_id: currentUserId, action, target_type: targetType, target_id: targetId, details })
+  }
+
+  const changeAccountStatus = async (user: AdminUser) => {
+    const nextStatus = user.account_status === 'active' ? 'suspended' : 'active'
+    if (!window.confirm(`${nextStatus === 'suspended' ? 'Suspend' : 'Restore'} ${user.full_name || 'this account'}?`)) return
+    const result = await supabase.from('profiles').update({ account_status: nextStatus }).eq('id', user.id)
+    if (result.error) return window.alert(result.error.message)
+    await recordModeration(nextStatus, 'user', user.id, `${user.full_name || 'User'} changed to ${nextStatus}`)
+    setAdminUsers((current) => current.map((item) => item.id === user.id ? { ...item, account_status: nextStatus } : item))
+    setAdminMessage(`Account ${nextStatus}.`)
+  }
+
+  const changeListingStatus = async (listing: AdminListing) => {
+    const nextStatus = listing.status === 'archived' ? 'active' : 'archived'
+    if (!window.confirm(`${nextStatus === 'archived' ? 'Remove' : 'Restore'} “${listing.title}”?`)) return
+    const result = await supabase.from('listings').update({ status: nextStatus }).eq('id', listing.id)
+    if (result.error) return window.alert(result.error.message)
+    await recordModeration(nextStatus === 'archived' ? 'listing_removed' : 'listing_restored', 'listing', listing.id, listing.title)
+    setAdminListings((current) => current.map((item) => item.id === listing.id ? { ...item, status: nextStatus } : item))
+    setMarketListings((current) => nextStatus === 'archived' ? current.filter((item) => item.id !== listing.id) : current)
+    setAdminMessage(`Listing ${nextStatus}.`)
   }
 
   return (
@@ -733,7 +767,11 @@ function App() {
             <button className="modal-close" onClick={() => setShowAdmin(false)} aria-label="Close"><X /></button>
             <div className="admin-heading"><span className="auth-icon"><ShieldAlert /></span><div><span className="kicker">Restricted access</span><h2>Trust & safety centre</h2><p>Review identities and act on suspicious marketplace activity.</p></div><button onClick={loadAdminQueues}>Refresh queues</button></div>
             {adminMessage && <p className="admin-message">{adminMessage}</p>}
-            <div className="admin-columns">
+            <nav className="admin-tabs"><a href="#admin-overview">Overview</a><a href="#admin-accounts">Accounts</a><a href="#admin-listings">Listings</a><a href="#admin-safety">Safety queues</a></nav>
+            <div className="admin-overview" id="admin-overview"><div><span>Registered accounts</span><strong>{adminUsers.length}</strong><small>{adminUsers.filter((user) => user.account_status === 'suspended').length} suspended</small></div><div><span>Marketplace listings</span><strong>{adminListings.length}</strong><small>{adminListings.filter((item) => item.status === 'active').length} active</small></div><div><span>Identity queue</span><strong>{verificationQueue.length}</strong><small>awaiting review</small></div><div><span>Open reports</span><strong>{reportQueue.length}</strong><small>need attention</small></div></div>
+            <section className="admin-table-section" id="admin-accounts"><div className="queue-title"><div><h3>Accounts and sellers</h3><p>Manage access for the latest {adminUsers.length} accounts</p></div><UserRound /></div><div className="admin-table">{adminUsers.map((user) => <article key={user.id}><div className="seller-avatar">{(user.full_name || 'BD').slice(0,2).toUpperCase()}</div><span><b>{user.full_name || 'Unnamed account'}</b><small>{user.phone || 'No phone'} · Joined {new Date(user.created_at).toLocaleDateString()}</small></span><i className={user.verified ? 'verified' : ''}>{user.verified ? 'Verified' : user.verification_status}</i><em className={user.account_status}>{user.account_status}</em><button onClick={() => changeAccountStatus(user)}>{user.account_status === 'active' ? 'Suspend' : 'Restore'}</button></article>)}</div></section>
+            <section className="admin-table-section" id="admin-listings"><div className="queue-title"><div><h3>All marketplace listings</h3><p>Review the latest {adminListings.length} advertisements</p></div><Store /></div><div className="admin-table listings-admin-table">{adminListings.map((listing) => <article key={listing.id}><span><b>{listing.title}</b><small>{listing.categories?.name || 'Other'} · {listing.location} · {listing.profiles?.full_name || 'Seller'}</small></span><strong>GH₵ {Number(listing.price).toLocaleString()}</strong><em className={listing.status}>{listing.status}</em><button onClick={() => changeListingStatus(listing)}>{listing.status === 'archived' ? 'Restore' : 'Remove'}</button></article>)}</div></section>
+            <div className="admin-columns" id="admin-safety">
               <section><div className="queue-title"><div><h3>Identity reviews</h3><p>Private documents · {verificationQueue.length} pending</p></div><IdCard /></div>{verificationQueue.length ? <div className="moderation-list">{verificationQueue.map((request) => <article key={request.id}><div><b>{request.profiles?.full_name || 'BuyDey seller'}</b><small>{request.document_type.replace('_', ' ')} · ending {request.document_number_last4}</small><small>Submitted {new Date(request.submitted_at).toLocaleDateString()}</small></div><div className="document-actions"><button onClick={() => openPrivateDocument(request.front_path)}><ExternalLink /> ID front</button>{request.back_path && <button onClick={() => openPrivateDocument(request.back_path)}><ExternalLink /> ID back</button>}<button onClick={() => openPrivateDocument(request.selfie_path)}><ExternalLink /> Selfie</button></div><div className="decision-actions"><button onClick={() => reviewVerification(request, 'approved')}><BadgeCheck /> Approve</button><button onClick={() => reviewVerification(request, 'rejected')}><X /> Reject</button></div></article>)}</div> : <div className="dashboard-empty"><CheckCircle2 /><b>Identity queue is clear</b><span>New verification requests will appear here.</span></div>}</section>
               <section><div className="queue-title"><div><h3>Reported listings</h3><p>Community reports · {reportQueue.length} open</p></div><ShieldAlert /></div>{reportQueue.length ? <div className="moderation-list">{reportQueue.map((report) => <article key={report.id}><div><b>{report.listings?.title || 'Reported listing'}</b><small>{report.reason} · {report.listings?.location}</small><small>Reported by {report.profiles?.full_name || 'community member'}</small></div><div className="decision-actions report-decisions"><button onClick={() => moderateReport(report, 'remove')}><Ban /> Remove ad</button><button onClick={() => moderateReport(report, 'suspend')}><ShieldAlert /> Suspend seller</button><button onClick={() => moderateReport(report, 'dismiss')}><CheckCircle2 /> Dismiss</button></div></article>)}</div> : <div className="dashboard-empty"><CheckCircle2 /><b>Report queue is clear</b><span>New marketplace reports will appear here.</span></div>}</section>
             </div>
