@@ -16,6 +16,7 @@ type Listing = {
   time: string
   category: string
   image: string
+  images?: string[]
   verified?: boolean
   promoted?: boolean
   description?: string
@@ -153,6 +154,9 @@ function App() {
             time: 'Recently',
             category: row.categories?.name || 'Other',
             image: firstPhoto ? supabase.storage.from('listing-images').getPublicUrl(firstPhoto.storage_path).data.publicUrl : listings[0].image,
+            images: [...(row.listing_images || [])]
+              .sort((a, b) => a.position - b.position)
+              .map((photo) => supabase.storage.from('listing-images').getPublicUrl(photo.storage_path).data.publicUrl),
             promoted: row.promoted,
             description: row.description,
             condition: row.condition,
@@ -174,11 +178,22 @@ function App() {
 
   const myListings = useMemo(() => currentUserId ? marketListings.filter((item) => item.sellerId === currentUserId) : [], [marketListings, currentUserId])
 
-  const galleryImages = useMemo(() => selectedListing ? Array.from(new Set([
-    selectedListing.image,
-    ...marketListings.filter((item) => item.id !== selectedListing.id && item.category === selectedListing.category).map((item) => item.image),
-    ...marketListings.filter((item) => item.id !== selectedListing.id).map((item) => item.image),
-  ])).slice(0, 4) : [], [selectedListing, marketListings])
+  const galleryImages = useMemo(() => selectedListing
+    ? Array.from(new Set([selectedListing.image, ...(selectedListing.images || [])])).slice(0, 10)
+    : [], [selectedListing])
+
+  const similarListings = useMemo(() => {
+    if (!selectedListing) return []
+    const selectedArea = selectedListing.location.split(',').pop()?.trim().toLowerCase() || ''
+    return marketListings
+      .filter((item) => item.id !== selectedListing.id && item.category === selectedListing.category)
+      .sort((a, b) => {
+        const aNearby = a.location.toLowerCase().includes(selectedArea) ? 1 : 0
+        const bNearby = b.location.toLowerCase().includes(selectedArea) ? 1 : 0
+        return bNearby - aNearby
+      })
+      .slice(0, 3)
+  }, [selectedListing, marketListings])
 
   const toggleSaved = async (id: number | string) => {
     const wasSaved = saved.includes(id)
@@ -531,6 +546,7 @@ function App() {
               <div className="detail-actions"><button onClick={openChat}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
               <p className="safety-note"><ShieldCheck /> Never pay before inspecting an item in person.</p>
               <button className="report-button" onClick={reportListing}>Report suspicious listing</button>
+              {similarListings.length > 0 && <div className="similar-section"><div><h3>Similar {selectedListing.category}</h3><small>Same category, with nearby listings first</small></div><div className="similar-listings">{similarListings.map((item) => <button key={item.id} onClick={() => { setSelectedListing(item); setGalleryImage(item.image) }}><img src={item.image} alt="" /><span><b>{item.title}</b><strong>{item.price}</strong><small><MapPin /> {item.location}</small></span></button>)}</div></div>}
             </div>
           </section>
         </div>
