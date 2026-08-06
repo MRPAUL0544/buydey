@@ -23,9 +23,12 @@ type Listing = {
   condition?: string
   sellerName?: string
   sellerId?: string
+  rating?: number
+  reviewCount?: number
 }
 
 type ChatMessage = { id: string; body: string; senderId?: string }
+type AppNotification = { id: string; type: string; title: string; body: string; listing_id?: string; read_at?: string; created_at: string }
 type VerificationReview = { id: string; user_id: string; document_type: string; document_number_last4: string; front_path: string; back_path?: string; selfie_path: string; status: string; submitted_at: string; user?: { full_name?: string; phone?: string } }
 type ListingReport = { id: string; listing_id: string; reason: string; details?: string; status: string; created_at: string; listing?: { title?: string; seller_id?: string; location?: string }; reporter?: { full_name?: string } }
 type AdminUser = { id: string; full_name?: string; phone?: string; verified: boolean; verification_status: string; account_status: 'active' | 'suspended'; created_at: string }
@@ -105,8 +108,10 @@ function App() {
   const [passwordResetMessage, setPasswordResetMessage] = useState('')
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([])
   const [adminListings, setAdminListings] = useState<AdminListing[]>([])
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
+  const [showNotifications, setShowNotifications] = useState(false)
 
-  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset)
+  const anyModalOpen = Boolean(selectedListing || showLogin || showPostAd || showDashboard || showSaved || showChat || showVerification || showImageZoom || showAdmin || showPasswordReset || showNotifications)
 
   useEffect(() => localStorage.setItem('buydey-listings-v2', JSON.stringify(marketListings)), [marketListings])
   useEffect(() => localStorage.setItem('buydey-saved', JSON.stringify(saved)), [saved])
@@ -143,6 +148,14 @@ function App() {
     return () => { void supabase.removeChannel(channel) }
   }, [conversationId])
   useEffect(() => {
+    if (!currentUserId) { setNotifications([]); return }
+    supabase.from('notifications').select('id,type,title,body,listing_id,read_at,created_at').eq('user_id', currentUserId).order('created_at', { ascending: false }).limit(30).then(({ data }) => setNotifications((data || []) as AppNotification[]))
+    const channel = supabase.channel(`notifications-${currentUserId}`).on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${currentUserId}`,
+    }, (payload) => setNotifications((current) => [payload.new as AppNotification, ...current])).subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [currentUserId])
+  useEffect(() => {
     const previous = document.body.style.overflow
     document.body.style.overflow = anyModalOpen ? 'hidden' : previous
     return () => { document.body.style.overflow = previous }
@@ -158,13 +171,14 @@ function App() {
   }, [currentUser])
   useEffect(() => {
     supabase.from('listings')
-      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,categories(name),profiles(full_name,verified),listing_images(storage_path,position)')
+      .select('id,seller_id,title,description,condition,price,location,created_at,promoted,categories(name),profiles(full_name,verified),listing_images(storage_path,position),seller_reviews(rating)')
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .then(({ data }) => {
         if (!data?.length) return
         const online = data.map((row: any): Listing => {
           const firstPhoto = [...(row.listing_images || [])].sort((a, b) => a.position - b.position)[0]
+          const reviewRatings = (row.seller_reviews || []).map((review: { rating: number }) => Number(review.rating))
           return {
             id: row.id,
             title: row.title,
@@ -182,6 +196,8 @@ function App() {
             sellerId: row.seller_id,
             sellerName: row.profiles?.full_name || 'BuyDey seller',
             verified: Boolean(row.profiles?.verified),
+            rating: reviewRatings.length ? reviewRatings.reduce((total: number, value: number) => total + value, 0) / reviewRatings.length : undefined,
+            reviewCount: reviewRatings.length,
           }
         })
         setMarketListings((current) => [...online, ...current.filter((item) => !online.some((live) => live.id === item.id))])
@@ -496,6 +512,32 @@ function App() {
     setAdminMessage(`Listing ${nextStatus}.`)
   }
 
+  const submitSellerReview = async () => {
+    if (!selectedListing || typeof selectedListing.id === 'number' || !selectedListing.sellerId) return window.alert('Ratings are available after contacting a real seller.')
+    if (!currentUserId) { setAuthMessage('Sign in before rating a seller.'); setShowLogin(true); return }
+    if (currentUserId === selectedListing.sellerId) return window.alert('You cannot rate your own listing.')
+    const rawRating = window.prompt('Rate this seller from 1 to 5 stars:')?.trim()
+    if (!rawRating) return
+    const rating = Number(rawRating)
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return window.alert('Please enter a whole number from 1 to 5.')
+    const comment = window.prompt('Briefly describe your experience with this seller:')?.trim()
+    if (!comment || comment.length < 3) return
+    const result = await supabase.from('seller_reviews').insert({ listing_id: selectedListing.id, reviewer_id: currentUserId, seller_id: selectedListing.sellerId, rating, comment })
+    if (result.error) return window.alert(result.error.message.includes('reviews_buyer_insert') ? 'Contact this seller through BuyDey chat before leaving a review.' : result.error.message.includes('duplicate') ? 'You already reviewed this seller for this listing.' : result.error.message)
+    setSelectedListing({ ...selectedListing, rating: selectedListing.rating ? ((selectedListing.rating * (selectedListing.reviewCount || 0)) + rating) / ((selectedListing.reviewCount || 0) + 1) : rating, reviewCount: (selectedListing.reviewCount || 0) + 1 })
+    window.alert('Thank you. Your seller review is now published.')
+  }
+
+  const openNotifications = async () => {
+    if (!currentUserId) { setShowLogin(true); return }
+    setShowNotifications(true)
+    const unread = notifications.filter((item) => !item.read_at).map((item) => item.id)
+    if (unread.length) {
+      await supabase.from('notifications').update({ read_at: new Date().toISOString() }).in('id', unread)
+      setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() })))
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="site-header">
@@ -516,6 +558,7 @@ function App() {
             <a href="#trust">Trust & safety</a>
           </nav>
           <div className="nav-actions">
+            <button className="icon-button notification-header-button" aria-label={`Notifications (${notifications.filter((item) => !item.read_at).length} unread)`} onClick={openNotifications}><Bell size={20} />{notifications.some((item) => !item.read_at) && <span>{notifications.filter((item) => !item.read_at).length}</span>}</button>
             <button className="icon-button saved-header-button" aria-label={`Saved items (${saved.length})`} onClick={() => setShowSaved(true)}><Heart size={20} fill={saved.length ? 'currentColor' : 'none'} /><span>{saved.length}</span></button>
             <button className="login-button desktop-only" onClick={() => currentUser ? setShowDashboard(true) : setShowLogin(true)}><UserRound size={19} /> {currentUser ? 'My account' : 'Sign in'}</button>
             <button className="sell-button" onClick={() => { setAdSubmitted(false); setShowPostAd(true) }}><Camera size={19} /> Post free ad</button>
@@ -650,9 +693,10 @@ function App() {
               <p className="detail-description">{selectedListing.description || 'Ask the seller for full details and inspect the item carefully before paying.'}</p>
               {selectedListing.condition && <p className="listing-condition"><b>Condition:</b> {selectedListing.condition}</p>}
               <div className="seller-box">
-                <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.verified ? 'Trusted' : 'New'}</b>
+                <div className="seller-avatar">{(selectedListing.sellerName || 'BD').slice(0, 2).toUpperCase()}</div><div><b>{selectedListing.sellerName || 'BuyDey seller'} {selectedListing.verified && <BadgeCheck size={16} />}</b><span>{selectedListing.verified ? 'Identity verified by BuyDey' : 'Identity not yet verified'} · Meet safely in public</span></div><Star size={17} fill="currentColor" /><b>{selectedListing.rating ? `${selectedListing.rating.toFixed(1)} (${selectedListing.reviewCount})` : selectedListing.verified ? 'Trusted' : 'New'}</b>
               </div>
               <div className="detail-actions"><button onClick={openChat}><MessageCircle /> Chat with seller</button><button><Phone /> Show number</button></div>
+              {typeof selectedListing.id !== 'number' && <button className="rate-seller-button" onClick={submitSellerReview}><Star /> Rate this seller</button>}
               <p className="safety-note"><ShieldCheck /> Never pay before inspecting an item in person.</p>
               <button className="report-button" onClick={reportListing}>Report suspicious listing</button>
               {similarListings.length > 0 && <div className="similar-section"><div><h3>Similar {selectedListing.category}</h3><small>Same category, with nearby listings first</small></div><div className="similar-listings">{similarListings.map((item) => <button key={item.id} onClick={() => { setSelectedListing(item); setGalleryImage(item.image) }}><img src={item.image} alt="" /><span><b>{item.title}</b><strong>{item.price}</strong><small><MapPin /> {item.location}</small></span></button>)}</div></div>}
@@ -721,6 +765,16 @@ function App() {
             <button className="modal-close" onClick={() => setShowSaved(false)} aria-label="Close"><X /></button>
             <span className="auth-icon"><Heart fill="currentColor" /></span><span className="kicker">Your favourites</span><h2>Saved listings</h2><p>Everything you liked is kept here so you can return to it quickly.</p>
             {marketListings.filter((item) => saved.includes(item.id)).length ? <div className="saved-listings">{marketListings.filter((item) => saved.includes(item.id)).map((item) => <article key={item.id}><button className="saved-main" onClick={() => { setShowSaved(false); setGalleryImage(item.image); setSelectedListing(item) }}><img src={item.image} alt={item.title} /><span><b>{item.title}</b><strong>{item.price}</strong><small><MapPin /> {item.location}</small></span><ArrowRight /></button><button className="saved-remove" onClick={() => toggleSaved(item.id)} aria-label={`Remove ${item.title} from saved items`}><Heart fill="currentColor" /></button></article>)}</div> : <div className="dashboard-empty"><Heart /><b>No saved products yet</b><span>Tap the heart on any listing and it will appear here.</span></div>}
+          </section>
+        </div>
+      )}
+
+      {showNotifications && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowNotifications(false)}>
+          <section className="modal-card notifications-modal" role="dialog" aria-modal="true" aria-label="BuyDey notifications" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setShowNotifications(false)} aria-label="Close"><X /></button>
+            <span className="auth-icon"><Bell /></span><span className="kicker">Stay updated</span><h2>Notifications</h2><p>Messages, verification results and important account activity appear here.</p>
+            {notifications.length ? <div className="notification-list">{notifications.map((item) => <article key={item.id}><span className={`notification-type ${item.type}`}><Bell /></span><div><b>{item.title}</b><p>{item.body}</p><small>{new Date(item.created_at).toLocaleString()}</small></div></article>)}</div> : <div className="dashboard-empty"><Bell /><b>You are all caught up</b><span>New BuyDey alerts will appear here.</span></div>}
           </section>
         </div>
       )}
