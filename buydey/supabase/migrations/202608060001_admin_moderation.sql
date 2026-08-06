@@ -12,6 +12,7 @@ create or replace function public.protect_profile_security_fields()
 returns trigger language plpgsql security definer set search_path=public as $$
 begin
   if (new.is_admin is distinct from old.is_admin or new.account_status is distinct from old.account_status)
+     and session_user <> 'postgres'
      and not public.current_user_is_admin() then
     raise exception 'Only administrators may change account security fields';
   end if;
